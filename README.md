@@ -59,12 +59,21 @@ python bot.py
 | `FREE_DAILY_LIMIT` | | `20` | Daily archives for free users |
 | `UPI_ID` | | `Ahmadammar@fam` | UPI ID that receives payments |
 | `UPI_NAME` | | `Erebus Premium` | Payee name shown in the UPI app |
+| `USE_CUSTOM_EMOJI` | | `1` | Set `0` to switch custom emojis off |
 
 Plans and prices are set in the `PLANS` line near the top of `bot.py`:
 
 ```python
 PLANS = {1: (30, 29), 2: (60, 39), 3: (90, 49)}   # months: (days, price in INR)
 ```
+
+---
+
+## 🎨 Interface
+
+- Clean, panel-style screens: quote header, emoji-led rows and wide buttons, in the bot's small-caps font.
+- **Self-cleaning chat**: menus edit in place, and prompts, QR pictures, typed commands and short notices are deleted once they are no longer needed.
+- **Animated (custom) emojis & coloured buttons** (optional): send `/emojis` to see the emoji names, then send the bot a message like `ok` + any custom emoji to set it. IDs are saved in `emoji_ids.json`. This needs Telegram Premium on the bot owner's account. If anything breaks, set `USE_CUSTOM_EMOJI=0` in `.env`. Button icons and colours need `aiogram>=3.25`.
 
 ---
 
@@ -130,7 +139,7 @@ All timestamps are UTC. The daily limit resets at 00:00 UTC.
 └── README.md
 ```
 
-Created at runtime (keep them out of Git): `.env`, `bot_data.sqlite3`, `saved_media/`, `bot.log`.
+Created at runtime (keep them out of Git): `.env`, `emoji_ids.json`, `bot_data.sqlite3`, `saved_media/`, `bot.log`.
 
 ---
 
