@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="theme-color" content="#090b16" />
+  <title>ErebusSpyBot — Powered by Erebus</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090b16;
+      --text: #f4f5ff;
+      --muted: #a6abc5;
+      --glass: rgba(255,255,255,.075);
+      --line: rgba(255,255,255,.14);
+      --accent: #9b8cff;
+      --cyan: #66e5e8;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, Segoe UI, sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(ellipse at 15% 10%, rgba(111,87,255,.28), transparent 38%),
+        radial-gradient(ellipse at 90% 75%, rgba(38,207,216,.16), transparent 34%),
+        var(--bg);
+      display: grid;
+      place-items: center;
+      padding: 28px 16px;
+    }
+    .shell { width: min(920px, 100%); }
+    .nav {
+      display: flex; justify-content: space-between; align-items: center;
+      margin-bottom: 22px; color: var(--muted); font-size: .9rem;
+    }
+    .brand { color: var(--text); font-weight: 750; letter-spacing: .08em; }
+    .status {
+      border: 1px solid var(--line); border-radius: 999px;
+      padding: 8px 12px; background: var(--glass);
+      backdrop-filter: blur(16px);
+    }
+    .card {
+      position: relative; overflow: hidden;
+      padding: clamp(28px, 6vw, 64px);
+      border: 1px solid var(--line); border-radius: 30px;
+      background: linear-gradient(135deg, rgba(255,255,255,.12), rgba(255,255,255,.035));
+      box-shadow: 0 28px 90px rgba(0,0,0,.42);
+      backdrop-filter: blur(24px); -webkit-backdrop-filter: blur(24px);
+    }
+    .card::before {
+      content: ""; position: absolute; width: 260px; height: 260px;
+      right: -100px; top: -120px; border-radius: 50%;
+      background: rgba(155,140,255,.22); filter: blur(10px);
+      pointer-events: none;
+    }
+    .eyebrow {
+      color: var(--cyan); text-transform: uppercase; letter-spacing: .2em;
+      font-size: .72rem; font-weight: 800;
+    }
+    h1 { font-size: clamp(2.5rem, 8vw, 5.2rem); line-height: .98; margin: 18px 0; letter-spacing: -.06em; }
+    h1 span {
+      background: linear-gradient(90deg, #c2b8ff, #75e8ed);
+      -webkit-background-clip: text; background-clip: text; color: transparent;
+    }
+    .lead { max-width: 650px; color: var(--muted); font-size: clamp(1rem, 2vw, 1.18rem); line-height: 1.75; }
+    .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; margin: 34px 0; }
+    .tile {
+      padding: 20px; border-radius: 18px; border: 1px solid var(--line);
+      background: rgba(8,10,25,.34);
+    }
+    .tile h2 { margin: 0 0 8px; font-size: 1rem; }
+    .tile p { margin: 0; color: var(--muted); line-height: 1.6; font-size: .92rem; }
+    .actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 28px; }
+    .button {
+      display: inline-flex; align-items: center; justify-content: center;
+      min-height: 48px; padding: 0 20px; border-radius: 14px;
+      text-decoration: none; font-weight: 750; transition: transform .2s, opacity .2s;
+    }
+    .button:hover { transform: translateY(-2px); }
+    .primary { color: #090b16; background: linear-gradient(100deg, #b9adff, #77e7e8); }
+    .secondary { color: var(--text); border: 1px solid var(--line); background: var(--glass); }
+    footer { text-align: center; color: #858ba8; font-size: .82rem; padding: 22px 8px 0; }
+    @media (max-width: 600px) {
+      .grid { grid-template-columns: 1fr; }
+      .nav { gap: 12px; }
+    }
+  </style>
+</head>
+<body>
+  <main class="shell">
+    <div class="nav">
+      <div class="brand">EREBUS</div>
+      <div class="status">✦ Telegram Bot</div>
+    </div>
+
+    <section class="card">
+      <div class="eyebrow">Powered by Erebus</div>
+      <h1>Meet <span>ErebusSpyBot</span></h1>
+      <p class="lead">
+        A Telegram bot experience built for handling media shared in a private chat.
+        Simple, direct, and designed with a clean workflow.
+      </p>
+
+      <div class="grid">
+        <article class="tile">
+          <h2>Private-chat workflow</h2>
+          <p>Interact with the bot through its Telegram private chat for a focused experience.</p>
+        </article>
+        <article class="tile">
+          <h2>Media support</h2>
+          <p>Work with media that you have permission to save and keep, while respecting the sender's privacy and platform rules.</p>
+        </article>
+      </div>
+
+      <div class="eyebrow">Creator</div>
+      <h2 style="font-size:1.5rem; margin:10px 0 0;">Haze</h2>
+      <p class="lead" style="font-size:.98rem; margin-top:8px;">
+        Created by Haze · Powered by Erebus
+      </p>
+
+      <div class="actions">
+        <a class="button primary" href="https://t.me/ErebusSpyBot" target="_blank" rel="noopener noreferrer">Open @ErebusSpyBot ↗</a>
+        <a class="button secondary" href="#about">About the project</a>
+      </div>
+      <div id="about" style="margin-top:28px; padding-top:20px; border-top:1px solid var(--line); color:var(--muted); font-size:.85rem; line-height:1.6;">
+        Please only save or retain media when you have the sender's permission. This page does not imply that Telegram's view-once or other privacy protections can or should be bypassed.
+      </div>
+    </section>
+    <footer>© 2026 Erebus · Created by Haze</footer>
+  </main>
+</body>
+</html>
