@@ -11,6 +11,10 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 
+from flask import Flask, send_from_directory
+from threading import Thread
+
+
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -47,7 +51,7 @@ def run():
 def keep_alive():
     server = Thread(target=run, daemon=True)
     server.start()
-keep_alive()
+
 
 
 # ----------------------------------------------------------------------------
@@ -1585,6 +1589,7 @@ async def archive_reply(message: Message):
 
 # ----------------------------------------------------------------------------
 async def main():
+    keep_alive()
     init_db()
     load_emoji_ids()
     if not HAS_ICON:
