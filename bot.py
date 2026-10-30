@@ -29,6 +29,27 @@ try:
 except ImportError:
     qrcode = None
 
+app = Flask(__name__)
+@app.route("/")
+def home():
+    return send_from_directory(
+        os.path.dirname(os.path.abspath(__file__)),
+        "index.html"
+    )
+
+@app.route("/health")
+def health():
+    return "OK", 200
+
+def run():
+    app.run(host="0.0.0.0", port=10000)
+
+def keep_alive():
+    server = Thread(target=run, daemon=True)
+    server.start()
+keep_alive()
+
+
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
