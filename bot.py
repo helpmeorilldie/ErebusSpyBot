@@ -11,10 +11,6 @@ from io import BytesIO
 from pathlib import Path
 from urllib.parse import quote
 
-from flask import Flask, send_from_directory
-from threading import Thread
-
-
 from dotenv import load_dotenv
 from aiogram import Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
@@ -33,27 +29,6 @@ try:
 except ImportError:
     qrcode = None
 
-app = Flask(__name__)
-@app.route("/")
-def home():
-    return send_from_directory(
-        os.path.dirname(os.path.abspath(__file__)),
-        "index.html"
-    )
-
-@app.route("/health")
-def health():
-    return "OK", 200
-
-def run():
-    app.run(host="0.0.0.0", port=10000)
-
-def keep_alive():
-    server = Thread(target=run, daemon=True)
-    server.start()
-
-
-
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
@@ -63,7 +38,7 @@ OWNER_ID = int(os.getenv("OWNER_ID", "0"))
 CHANNEL = os.getenv("CHANNEL", "@linksfromerebus")
 GROUP = os.getenv("GROUP", "@ecochamber")
 DB_PATH = Path(os.getenv("DB_PATH", "bot_data.sqlite3"))
-FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "10"))  # default for every free user
+FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "20"))  # default for every free user
 SAVE_DIR = Path("saved_media")
 SAVE_DIR.mkdir(exist_ok=True)
 TRIGGER_WORD = "shit"
@@ -127,6 +102,35 @@ EMOJI = {
     "stats": "📊", "lock": "🔒", "ghost": "👻", "home": "🏠", "bank": "🏦",
     "party": "🎉", "pin": "📝", "spin": "🌀",
 }
+# Built-in premium (animated) emoji IDs. Anything saved in emoji_ids.json (via /emojis)
+# overrides these. Names without an ID here simply keep their normal emoji.
+DEFAULT_EMOJI_IDS = {
+    "title": "5424972470023104089",    # fire
+    "star": "5438496463044752972",
+    "bolt": "5224607267797606837",
+    "ok": "5206607081334906820",
+    "err": "5210952531676504517",
+    "warn": "5447644880824181073",
+    "time": "5440621591387980068",
+    "pay": "5444856076954520455",      # receipt
+    "box": "6046233639644042899",
+    "money": "5278467510604160626",
+    "calendar": "5413879192267805083",
+    "bell": "5458603043203327669",
+    "ban": "5260293700088511294",
+    "admin": "5341715473882955310",
+    "mail": "5253742260054409879",
+    "link": "5271604874419647061",
+    "channel": "5424818078833715060",
+    "group": "5332724926216428039",
+    "stats": "5231200819986047254",
+    "lock": "5296369303661067030",
+    "ghost": "5431609822288033666",
+    "bank": "5332455502917949981",
+    "party": "5276032951342088188",
+    "pin": "5397782960512444700",
+    "spin": "5375338737028841420",
+}
 EMOJI_IDS = {}
 
 
@@ -134,6 +138,7 @@ def load_emoji_ids():
     EMOJI_IDS.clear()
     if not USE_CUSTOM_EMOJI:
         return
+    EMOJI_IDS.update(DEFAULT_EMOJI_IDS)
     try:
         data = json.loads(EMOJI_FILE.read_text(encoding="utf-8"))
         EMOJI_IDS.update({k: str(v) for k, v in data.items() if k in EMOJI})
@@ -585,6 +590,7 @@ def howto_text():
         row("pin", "Step 3", f"{sc('In any chat, reply to a media with')} <code>{TRIGGER_WORD}</code>"),
         row("box", "Step 4", sc("The copy arrives here, in your private chat")),
         SEP,
+        f"{E('box')} {sc('A backup copy is also kept in our private archive.')}",
         f"{E('lock')} {sc('Only you (the account owner) can trigger it.')}",
     ])
 
@@ -1221,6 +1227,7 @@ async def _review(callback: CallbackQuery, approve: bool):
     if approve:
         expiry = grant_premium(uid, row_["days"], extend=True)
         notified = await notify_premium(uid, expiry)
+        _TASKS.add(asyncio.create_task(backup_now("payment")))  # never lose a paid premium
         verdict = f"{E('ok')} <b>{sc('Approved')}</b> — {sc('premium until')} {expiry:%Y-%m-%d}"
     else:
         notified = True
@@ -1477,15 +1484,36 @@ async def deliver(media_type: str, chat_id: int, upload: FSInputFile):
     common = dict(chat_id=chat_id, reply_markup=media_keyboard())
     cap = dict(caption=archive_caption())
     if media_type == "photo":
-        await bot.send_photo(photo=upload, **cap, **common)
-    elif media_type == "video":
-        await bot.send_video(video=upload, **cap, **common)
-    elif media_type == "animation":
-        await bot.send_animation(animation=upload, **cap, **common)
-    elif media_type == "document":
-        await bot.send_document(document=upload, **cap, **common)
-    elif media_type == "video_note":
-        await bot.send_video_note(video_note=upload, **common)  # video notes have no caption
+        return await bot.send_photo(photo=upload, **cap, **common)
+    if media_type == "video":
+        return await bot.send_video(video=upload, **cap, **common)
+    if media_type == "animation":
+        return await bot.send_animation(animation=upload, **cap, **common)
+    if media_type == "document":
+        return await bot.send_document(document=upload, **cap, **common)
+    if media_type == "video_note":
+        return await bot.send_video_note(video_note=upload, **common)  # video notes have no caption
+
+
+# Private channel that keeps a permanent copy of every archived file (survives host crashes).
+# Needs the NUMERIC id (-100...), not the invite link. Add the bot as admin with "post messages".
+MEDIA_CHAT_ID = int(os.getenv("MEDIA_CHAT_ID", "0"))
+
+
+async def store_media_copy(sent: Message, owner_id, source_chat_id, media_type):
+    """Copy the file the owner just received into the media channel (no re-upload)."""
+    if not MEDIA_CHAT_ID or sent is None:
+        return
+    try:
+        info = f"owner {owner_id} | chat {source_chat_id} | {media_type} | {now():%Y-%m-%d %H:%M} UTC"
+        copied = await bot.copy_message(
+            MEDIA_CHAT_ID, from_chat_id=sent.chat.id, message_id=sent.message_id,
+            caption=info, parse_mode=None)
+        if media_type == "video_note":  # video notes cannot carry a caption
+            await bot.send_message(MEDIA_CHAT_ID, info, reply_to_message_id=copied.message_id,
+                                   parse_mode=None)
+    except Exception:
+        logging.exception("Could not copy media to the media channel")
 
 
 @dp.business_message()
@@ -1565,7 +1593,8 @@ async def archive_reply(message: Message):
 
     try:
         await bot.download(media.file_id, destination=filepath)
-        await deliver(media_type, owner_id, FSInputFile(filepath))
+        sent = await deliver(media_type, owner_id, FSInputFile(filepath))
+        await store_media_copy(sent, owner_id, message.chat.id, media_type)
 
         with db() as con:
             con.execute(
@@ -1588,10 +1617,139 @@ async def archive_reply(message: Message):
 
 
 # ----------------------------------------------------------------------------
+# Backup: the database is sent to a Telegram chat and PINNED there. After a host crash
+# the bot finds the pinned file on startup and restores it automatically.
+# Best practice: create a private channel, add the bot as admin (post + pin rights) and
+# put its ID in .env as BACKUP_CHAT_ID=-100xxxxxxxxxx. Default is your own chat with the bot.
+# Telegram limit: bots can download files up to 20 MB (the DB is far smaller).
+# ----------------------------------------------------------------------------
+BACKUP_CHAT_ID = int(os.getenv("BACKUP_CHAT_ID", "0")) or OWNER_ID
+BACKUP_EVERY_HOURS = float(os.getenv("BACKUP_EVERY_HOURS", "3"))
+_backup_lock = asyncio.Lock()
+_last_backup_hash = None
+
+
+def _snapshot_db():
+    """Consistent copy of the live database (safe while the bot is running), gzipped."""
+    import gzip
+    tmp = DB_PATH.with_suffix(".snapshot")
+    src = sqlite3.connect(DB_PATH)
+    dst = sqlite3.connect(tmp)
+    try:
+        src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
+    data = gzip.compress(tmp.read_bytes(), compresslevel=9)
+    tmp.unlink(missing_ok=True)
+    return data
+
+
+async def backup_now(reason="auto", force=False):
+    """Send a snapshot to BACKUP_CHAT_ID and pin it. Skips if nothing changed."""
+    global _last_backup_hash
+    import hashlib
+    async with _backup_lock:
+        try:
+            if not DB_PATH.exists():
+                return False
+            data = await asyncio.to_thread(_snapshot_db)
+            digest = hashlib.sha256(data).hexdigest()
+            if digest == _last_backup_hash and not force:
+                return True
+            name = f"backup_{now():%Y%m%d_%H%M%S}.sqlite3.gz"
+            msg = await bot.send_document(
+                BACKUP_CHAT_ID, BufferedInputFile(data, filename=name),
+                caption=f"DB backup ({reason}) {now():%Y-%m-%d %H:%M} UTC",
+                parse_mode=None, disable_notification=True)
+            try:
+                await bot.pin_chat_message(BACKUP_CHAT_ID, msg.message_id, disable_notification=True)
+            except Exception:
+                logging.exception("Could not pin backup (give the bot pin rights)")
+            _last_backup_hash = digest
+            logging.info("Backup sent (%s, %d bytes)", reason, len(data))
+            return True
+        except Exception:
+            logging.exception("Backup failed")
+            return False
+
+
+async def restore_if_missing():
+    """Startup: if there is no database (fresh host), pull the pinned backup."""
+    import gzip
+    if DB_PATH.exists() and DB_PATH.stat().st_size > 0:
+        return
+    try:
+        chat = await bot.get_chat(BACKUP_CHAT_ID)
+        pinned = chat.pinned_message
+        if not pinned or not pinned.document:
+            logging.warning("No pinned backup found, starting with an empty database")
+            return
+        buf = BytesIO()
+        await bot.download(pinned.document.file_id, destination=buf)
+        DB_PATH.write_bytes(gzip.decompress(buf.getvalue()))
+        logging.info("DATABASE RESTORED from pinned backup")
+        print("Database restored from Telegram backup.")
+    except Exception:
+        logging.exception("Restore failed")
+
+
+async def backup_loop():
+    await asyncio.sleep(60)
+    while True:
+        await backup_now("auto")
+        await asyncio.sleep(max(0.1, BACKUP_EVERY_HOURS) * 3600)
+
+
+@dp.message(Command("backup"))
+async def backup_command(message: Message):
+    if message.from_user.id != OWNER_ID:
+        return
+    await tidy(message)
+    ok = await backup_now("manual", force=True)
+    await notice(message.chat.id, f"{E('ok')} {sc('Backup sent')}" if ok
+                 else f"{E('err')} {sc('Backup failed, check bot.log')}", ttl=8)
+
+
+@dp.message(Command("restore"))
+async def restore_command(message: Message):
+    """Reply to a backup file (.sqlite3.gz) with /restore to load it (owner only)."""
+    import gzip
+    if message.from_user.id != OWNER_ID:
+        return
+    await tidy(message)
+    doc = message.reply_to_message.document if message.reply_to_message else None
+    if not doc:
+        return await notice(message.chat.id, "Reply to a backup file with <code>/restore</code>", ttl=8)
+    buf = BytesIO()
+    await bot.download(doc.file_id, destination=buf)
+    raw = buf.getvalue()
+    try:
+        raw = gzip.decompress(raw)
+    except OSError:
+        pass  # plain .sqlite3 file
+    if not raw.startswith(b"SQLite format 3"):
+        return await notice(message.chat.id, f"{E('err')} {sc('Not a valid database file.')}", ttl=8)
+    await backup_now("before-restore", force=True)
+    tmp = DB_PATH.with_suffix(".restore")
+    tmp.write_bytes(raw)
+    src = sqlite3.connect(tmp)
+    dst = sqlite3.connect(DB_PATH)
+    try:
+        src.backup(dst)   # overwrites the live DB in place
+    finally:
+        src.close()
+        dst.close()
+        tmp.unlink(missing_ok=True)
+    init_db()
+    await notice(message.chat.id, f"{E('ok')} {sc('Database restored.')}", ttl=10)
+
+
 async def main():
-    keep_alive()
+    await restore_if_missing()
     init_db()
     load_emoji_ids()
+    _TASKS.add(asyncio.create_task(backup_loop()))
     if not HAS_ICON:
         print("Note: aiogram < 3.25 -> button icons/colours disabled (pip install -U aiogram)")
     print("Media Archive Bot Started Successfully!")
