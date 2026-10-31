@@ -29,6 +29,29 @@ try:
 except ImportError:
     qrcode = None
 
+
+#For Render 24/7 host a web page 
+app = Flask(__name__)
+@app.route("/")
+def home():
+    return send_from_directory(
+        os.path.dirname(os.path.abspath(__file__)),
+        "index.html"
+    )
+
+@app.route("/health")
+def health():
+    return "OK", 200
+
+def run():
+    app.run(host="0.0.0.0", port=10000)
+
+def keep_alive():
+    server = Thread(target=run, daemon=True)
+    server.start()
+
+
+
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
@@ -1747,6 +1770,7 @@ async def restore_command(message: Message):
 
 async def main():
     await restore_if_missing()
+    keep_alive()
     init_db()
     load_emoji_ids()
     _TASKS.add(asyncio.create_task(backup_loop()))
