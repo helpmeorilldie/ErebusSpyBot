@@ -5,6 +5,10 @@ import logging
 import os
 import re
 import sqlite3
+#Only for tha flask and web if removing web then remove import too and from requirements.txt the module instalation
+from flask import Flask, send_from_directory
+from threading import Thread
+
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
