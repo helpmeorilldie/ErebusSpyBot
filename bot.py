@@ -314,7 +314,7 @@ def media_keyboard():
 
 def home_keyboard(is_admin=False):
     rows = [
-        [btn("How To Archive", "camera", callback_data="howto"),
+        [btn("Cᴏɴɴᴇᴄᴛ", "📸", callback_data="howto"),
          btn("My Premium", "star", callback_data="mypremium")],
         [btn("My Statistics", "stats", callback_data="mystats"),
          btn("Membership", "ok", callback_data="checkjoin")],
@@ -617,8 +617,8 @@ def howto_text():
         row("pin", "Step 3", f"{sc('In any chat, reply to a media with')} <code>{TRIGGER_WORD}</code>"),
         row("box", "Step 4", sc("The copy arrives here, in your private chat")),
         SEP,
-        f"{E('box')} {sc('A backup copy is also kept in our private archive.')}",
-        f"{E('lock')} {sc('Only you (the account owner) can trigger it.')}",
+        f"{E('box')} {sc('No backup copy is kept in our private archive❗')}",
+        f"{E('lock')} {sc('Only you can trigger it and access it 💐')}",
     ])
 
 
