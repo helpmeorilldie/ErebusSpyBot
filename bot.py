@@ -630,8 +630,8 @@ def howto_text():
         row("link", "Youtube", "https://youtube.com/shorts/KRKAUY3g7wk?si=mRH6Obpbkyp4V5h7"),
 
         SEP,
-        f"{E('box')} {sc('A backup copy is also kept in our private archive.')}",
-        f"{E('lock')} {sc('Only you (the account owner) can trigger it.')}",
+        f"{E('box')} {sc('No backup copy is kept in our Datavase for Privacy.')}",
+        f"{E('lock')} {sc('Only you (the account owner) can see in the bot.')}",
     ])
 
 
