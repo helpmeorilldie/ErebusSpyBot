@@ -1,30 +1,40 @@
 import asyncio
+import contextvars
+import csv
 import html
+import itertools
 import json
 import logging
 import os
+import random
 import re
 import sqlite3
+import tempfile
+import time
+import uuid
+from collections import deque
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from io import BytesIO
+from io import BytesIO, StringIO
 from pathlib import Path
 from urllib.parse import quote
+
+import aiohttp
+from dotenv import load_dotenv
+from aiogram import BaseMiddleware, Bot, Dispatcher, F
+from aiogram.client.default import DefaultBotProperties
+from aiogram.enums import ChatMemberStatus, ParseMode
 #Only for tha flask and web if removing web then remove import too and from requirements.txt the module instalation
 from flask import Flask, send_from_directory
 from threading import Thread
 
-from dotenv import load_dotenv
-from aiogram import Bot, Dispatcher, F
-from aiogram.client.default import DefaultBotProperties
-from aiogram.enums import ChatMemberStatus, ParseMode
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
     Message, CallbackQuery, InlineKeyboardMarkup, InlineKeyboardButton,
-    FSInputFile, BufferedInputFile, BusinessConnection,
+    FSInputFile, BufferedInputFile, BusinessConnection, BusinessMessagesDeleted,
 )
 
 try:
@@ -51,9 +61,6 @@ def run():
 def keep_alive():
     server = Thread(target=run, daemon=True)
     server.start()
-
-
-
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
@@ -64,9 +71,28 @@ CHANNEL = os.getenv("CHANNEL", "@linksfromerebus")
 GROUP = os.getenv("GROUP", "@ecochamber")
 DB_PATH = Path(os.getenv("DB_PATH", "bot_data.sqlite3"))
 FREE_DAILY_LIMIT = int(os.getenv("FREE_DAILY_LIMIT", "20"))  # default for every free user
+
+# ---- Media storage ------------------------------------------------------------
+# SAVE_MEDIA_LOCALLY = False (default): archived files are downloaded only as TEMPORARY files,
+#     handed to the owner + copied to the Telegram backup, then deleted from the server at once.
+# SAVE_MEDIA_LOCALLY = True: every archived file is also kept in ./saved_media on the server.
+# (You can also set SAVE_MEDIA_LOCALLY=1 in .env instead of editing the line below.)
+SAVE_MEDIA_LOCALLY = os.getenv("SAVE_MEDIA_LOCALLY", "0") == "1"
+# Telegram backup of archived media: a copy goes to MEDIA_CHAT_ID (see below). Default ON.
+# The database backup (BACKUP_CHAT_ID) is separate and stays ON as before.
+TG_MEDIA_BACKUP = os.getenv("TG_MEDIA_BACKUP", "1") == "1"
 SAVE_DIR = Path("saved_media")
-SAVE_DIR.mkdir(exist_ok=True)
+TEMP_DIR = Path(tempfile.gettempdir()) / "erebus_tmp_media"
+if SAVE_MEDIA_LOCALLY:
+    SAVE_DIR.mkdir(exist_ok=True)
 TRIGGER_WORD = "shit"
+
+TUTORIAL_URL = "https://youtube.com/shorts/KRKAUY3g7wk?si=G5eeDrXGJ5ZGfX5v"
+
+# Deleted-message saver (premium feature) and the free trial every user gets
+TRIAL_DAYS = 3
+DELETED_CACHE_HOURS = int(os.getenv("DELETED_CACHE_HOURS", "72"))   # how long copies are kept
+ANNOUNCE_TRIAL_ON_START = os.getenv("ANNOUNCE_TRIAL_ON_START", "1") == "1"
 
 # Payments (UPI). PLANS = {months: (days of premium, price in INR)}
 UPI_ID = os.getenv("UPI_ID", "Ahmadammar@fam")
@@ -103,9 +129,18 @@ _SMALL_CAPS = str.maketrans(
 )
 
 
+_LANG = contextvars.ContextVar("lang", default="en")   # language of the person being answered
+HI = {}                                                    # English text -> Hindi (filled below)
+
+
 def sc(text):
     """Bot font: 'free plan' -> 'Fʀᴇᴇ Pʟᴀɴ'. First letter of each word is a capital;
-    ACRONYMS, numbers, @names and /commands stay untouched."""
+    ACRONYMS, numbers, @names and /commands stay untouched. Users who chose Hindi get the
+    Hindi text from HI when there is one."""
+    if _LANG.get() == "hi":
+        translated = HI.get(text)
+        if translated is not None:
+            return translated
     def word(w):
         if any(c.isdigit() or c in "@/₹_<>&" for c in w) or (w.isupper() and len(w) > 1):
             return w
@@ -117,6 +152,149 @@ def sc(text):
     return "".join(p if p.isspace() else word(p) for p in re.split(r"(\s+)", text))
 
 
+# ---- Hindi texts (users pick the language with the Language button) -------------------
+# Key = the exact English text passed to sc(); anything missing simply stays English.
+HI.update({
+    # main menu and screens
+    "Welcome": "स्वागत है", "Media Archive Bot": "मीडिया आर्काइव बॉट", "Plan": "प्लान", "Premium": "प्रीमियम",
+    "Free": "फ्री", "Today": "आज", "Deleted Saver": "डिलीट सेवर",
+    "Reply to any media with": "किसी भी मीडिया को रिप्लाई करके लिखें",
+    "How To Archive": "आर्काइव कैसे करें", "My Premium": "मेरा प्रीमियम", "My Statistics": "मेरे आँकड़े",
+    "Membership": "मेंबरशिप", "Buy Premium": "प्रीमियम खरीदें", "Repeated Message": "रिपीट मैसेज",
+    "Deleted Messages": "डिलीट मैसेज", "Auto Reply": "ऑटो रिप्लाई", "Tools": "टूल्स", "Language": "भाषा",
+    "Updates": "अपडेट्स", "Main Menu": "मुख्य मेनू", "Back": "वापस", "Cancelled.": "रद्द किया गया।",
+    "Send /cancel to stop.": "रोकने के लिए /cancel भेजें।", "Example:": "उदाहरण:",
+    "Access locked": "एक्सेस बंद है", "Join Channel": "चैनल जॉइन करें", "Join Group": "ग्रुप जॉइन करें",
+    "I've Joined": "मैंने जॉइन कर लिया", "Join our channel and group, then tap I've Joined.":
+        "हमारा चैनल और ग्रुप जॉइन करें, फिर \"मैंने जॉइन कर लिया\" दबाएँ।",
+    # how to archive
+    "How to archive media": "मीडिया आर्काइव कैसे करें", "Step 1": "स्टेप 1", "Step 2": "स्टेप 2",
+    "Step 3": "स्टेप 3", "Step 4": "स्टेप 4", "Start this bot": "इस बॉट को स्टार्ट करें",
+    "Settings → Business → Chatbots → add this bot": "सेटिंग्स → बिज़नेस → चैटबॉट्स → इस बॉट को जोड़ें",
+    "In any chat, reply to a media with": "किसी भी चैट में मीडिया को रिप्लाई करके लिखें",
+    "The copy arrives here, in your private chat": "कॉपी यहीं, आपकी प्राइवेट चैट में आ जाएगी",
+    "Only you (the account owner) can trigger it.": "इसे सिर्फ़ आप (अकाउंट मालिक) चला सकते हैं।",
+    "Watch the video tutorial": "वीडियो ट्यूटोरियल देखें", "Watch Tutorial": "ट्यूटोरियल देखें",
+    "A backup copy is also kept in our private archive.": "एक बैकअप कॉपी हमारे प्राइवेट आर्काइव में भी रखी जाती है।",
+    "No copy is stored on our server. You can only view your saved photos here in the bot.":
+        "हमारे सर्वर पर कोई कॉपी सेव नहीं होती। आप अपनी सेव की हुई फ़ोटो सिर्फ़ यहीं बॉट में देख सकते हैं।",
+    "A private recovery copy is kept in the bot owner Telegram archive.":
+        "रिकवरी के लिए एक प्राइवेट कॉपी बॉट मालिक के टेलीग्राम आर्काइव में रखी जाती है।",
+    "No backup is saved, for your privacy. You can only view your saved photos here in the bot.":
+        "आपकी प्राइवेसी के लिए कोई बैकअप सेव नहीं किया जाता। आप अपनी सेव की हुई फ़ोटो सिर्फ़ यहीं बॉट में देख सकते हैं।",
+    # premium / stats
+    "Premium member": "प्रीमियम मेंबर", "Active Until": "सक्रिय है", "Daily Limit": "रोज़ की सीमा",
+    "Unlimited": "अनलिमिटेड", "Used Today": "आज इस्तेमाल", "You are on the free plan": "आप फ्री प्लान पर हैं",
+    "Go premium for unlimited archives.": "अनलिमिटेड आर्काइव के लिए प्रीमियम लें।", "Extend Premium": "प्रीमियम बढ़ाएँ",
+    "Your statistics": "आपके आँकड़े", "Total Archived": "कुल आर्काइव", "Premium Activated": "प्रीमियम चालू हो गया",
+    "Congratulations!": "बधाई हो!", "Valid Till": "वैध है", "Daily limit reached": "आज की सीमा पूरी हो गई",
+    "Limit": "सीमा", "Resets": "रीसेट", "per day": "प्रति दिन", "Premium plans": "प्रीमियम प्लान",
+    "Unlimited archives on every plan.": "हर प्लान में अनलिमिटेड आर्काइव।",
+    "Select a plan to get your payment QR.": "पेमेंट QR पाने के लिए प्लान चुनें।",
+    "Amount": "रकम", "Validity": "वैधता", "days": "दिन", "Back To Plans": "प्लान पर वापस",
+    "I've Paid — Send Screenshot": "मैंने पेमेंट कर दिया — स्क्रीनशॉट भेजें",
+    "Scan this QR with any UPI app": "इस QR को किसी भी UPI ऐप से स्कैन करें",
+    "Pay the exact amount": "सही रकम का भुगतान करें",
+    "Tap the button below and send the screenshot": "नीचे का बटन दबाकर स्क्रीनशॉट भेजें",
+    "Send your payment screenshot now as a photo.": "अब अपने पेमेंट का स्क्रीनशॉट फ़ोटो के रूप में भेजें।",
+    "Screenshot received": "स्क्रीनशॉट मिल गया", "Payment": "पेमेंट", "Status": "स्थिति",
+    "Waiting for approval": "मंज़ूरी का इंतज़ार",
+    "You will get a message here as soon as it is approved.": "मंज़ूरी मिलते ही आपको यहीं मैसेज मिलेगा।",
+    "Payment rejected": "पेमेंट अस्वीकार हुआ", "Your payment could not be verified.": "आपका पेमेंट वेरिफ़ाई नहीं हो सका।",
+    "If you think this is a mistake, contact": "अगर आपको लगता है कि यह गलती है, तो संपर्क करें",
+    "Payment cancelled.": "पेमेंट रद्द किया गया।",
+    # deleted messages + trial
+    "Deleted message saver": "डिलीट मैसेज सेवर", "Access": "एक्सेस", "Saving": "सेविंग", "On": "चालू", "Off": "बंद",
+    "Kept For": "रखा जाता है", "hours": "घंटे", "Active": "चालू", "Locked": "लॉक्ड", "Free Trial": "फ्री ट्रायल",
+    "When someone deletes a message in your private chats, the bot sends it to you here.":
+        "जब कोई आपकी प्राइवेट चैट में मैसेज डिलीट करता है, तो बॉट उसे आपको यहीं भेज देता है।",
+    "Text, photos, videos, voice notes, stickers and files are saved.":
+        "टेक्स्ट, फ़ोटो, वीडियो, वॉइस नोट, स्टिकर और फ़ाइलें सेव होती हैं।",
+    "Needs this bot connected in Settings → Business → Chatbots.":
+        "इसके लिए बॉट सेटिंग्स → बिज़नेस → चैटबॉट्स में जुड़ा होना चाहिए।",
+    "Your free trial has ended. Premium unlocks this again.": "आपका फ्री ट्रायल खत्म हो गया। प्रीमियम से यह फिर चालू होगा।",
+    "Your free trial has ended. Premium saves deleted messages for you.":
+        "आपका फ्री ट्रायल खत्म हो गया। प्रीमियम आपके लिए डिलीट मैसेज सेव करता है।",
+    "A message was deleted in one of your chats": "आपकी किसी चैट में एक मैसेज डिलीट हुआ",
+    "Turn Off": "बंद करें", "Turn On": "चालू करें", "Deleted message": "डिलीट किया गया मैसेज", "From": "किसने", "Sent": "भेजा",
+    "New: deleted message saver": "नया: डिलीट मैसेज सेवर", "Free trial unlocked": "फ्री ट्रायल चालू हो गया",
+    "Trial Ends": "ट्रायल खत्म", "Keep it after the trial with Premium.": "ट्रायल के बाद भी रखने के लिए प्रीमियम लें।",
+    "It is included in your Premium.": "यह आपके प्रीमियम में शामिल है।",
+    "Connect this bot in Settings → Business → Chatbots.": "इस बॉट को सेटिंग्स → बिज़नेस → चैटबॉट्स में जोड़ें।",
+    # repeater
+    "Repeated message": "रिपीट मैसेज", "Messages": "मैसेज", "Interval": "अंतराल", "Count": "गिनती", "Presets": "प्रीसेट",
+    "In any chat send:": "किसी भी चैट में भेजें:", "Set Messages": "मैसेज सेट करें", "Add Media": "मीडिया जोड़ें",
+    "Clear Items": "सब हटाएँ", "Save Current As Preset": "मौजूदा को प्रीसेट में सेव करें",
+    "Send your messages separated by": "अपने मैसेज भेजें, इनके बीच में लगाएँ",
+    "This replaces the whole list.": "इससे पूरी लिस्ट बदल जाएगी।",
+    "Send a photo, sticker, voice note, video or file to add it to the cycle.":
+        "साइकल में जोड़ने के लिए फ़ोटो, स्टिकर, वॉइस नोट, वीडियो या फ़ाइल भेजें।",
+    "Send the interval in seconds, minimum": "सेकंड में अंतराल भेजें, कम से कम",
+    "Send how many messages to send, example": "कितने मैसेज भेजने हैं, उदाहरण",
+    "Please send some text.": "कृपया कुछ टेक्स्ट भेजें।", "Send a whole number, like 20": "पूरी संख्या भेजें, जैसे 20",
+    "Send a number like 0.5 or a range like 0.5-2": "0.5 जैसी संख्या या 0.5-2 जैसी रेंज भेजें",
+    "Repeater": "रिपीटर", "Running": "चल रहा है", "Paused": "रुका हुआ", "Finished": "पूरा हुआ", "Stopped": "रोका गया",
+    "Failed": "फ़ेल", "Chat": "चैट", "Pause": "रोकें", "Resume": "फिर शुरू करें", "Stop": "बंद करें",
+    "This repeater has already ended.": "यह रिपीटर पहले ही खत्म हो चुका है।", "Stopping...": "रोक रहे हैं...",
+    "No messages set. Open Repeated Message in the bot menu.": "कोई मैसेज सेट नहीं है। बॉट मेनू में रिपीट मैसेज खोलें।",
+    "Already running there. Send .Axstop first.": "वहाँ पहले से चल रहा है। पहले .Axstop भेजें।",
+    "Nothing is running in that chat.": "उस चैट में कुछ नहीं चल रहा।",
+    "Repeater presets": "रिपीटर प्रीसेट", "Add some messages first.": "पहले कुछ मैसेज जोड़ें।",
+    "A preset stores your current messages, interval and count.": "प्रीसेट आपके मौजूदा मैसेज, अंतराल और गिनती को सेव रखता है।",
+    "No presets yet. Set up your messages, then save them here.": "अभी कोई प्रीसेट नहीं। मैसेज सेट करें, फिर यहाँ सेव करें।",
+    "items": "आइटम",
+    # auto reply
+    "Auto reply (away mode)": "ऑटो रिप्लाई (अवे मोड)", "Replying": "जवाब दे रहा है", "Manual": "मैन्युअल",
+    "Schedule": "शेड्यूल", "Timezone": "टाइमज़ोन", "Message": "मैसेज", "not set": "सेट नहीं",
+    "on": "चालू", "off": "बंद", "Turn Off Now": "अभी बंद करें", "Turn On Now": "अभी चालू करें",
+    "Set Message": "मैसेज सेट करें",
+    "People who message you get this reply once every 6 hours.": "आपको मैसेज करने वालों को हर 6 घंटे में एक बार यह जवाब मिलता है।",
+    "In a chat:": "किसी चैट में:", "(only for that chat)": "(सिर्फ़ उस चैट के लिए)",
+    "Send your away message.": "अपना अवे मैसेज भेजें।",
+    "Send the daily away hours in your timezone.": "अपने टाइमज़ोन में रोज़ के अवे घंटे भेजें।",
+    "Send your timezone offset from UTC.": "UTC से अपने टाइमज़ोन का अंतर भेजें।",
+    "Use the format 22:00-07:00": "22:00-07:00 फ़ॉर्मैट में भेजें", "Use an offset like +5:30 or -4": "+5:30 या -4 जैसा अंतर भेजें",
+    "Away mode is on": "अवे मोड चालू", "Away mode is off.": "अवे मोड बंद।", "until": "तक",
+    "This chat uses your default away message.": "यह चैट आपका डिफ़ॉल्ट अवे मैसेज इस्तेमाल करेगी।",
+    "Away message for": "अवे मैसेज इसके लिए",
+    # tools
+    "Everything here works inside your own chats through your Business account.":
+        "यहाँ सब कुछ आपके बिज़नेस अकाउंट से आपकी अपनी चैट्स में काम करता है।",
+    "Keyword Replies": "कीवर्ड रिप्लाई", "Keyword replies": "कीवर्ड रिप्लाई", "Snippets": "स्निपेट्स",
+    "Scheduled": "शेड्यूल्ड", "Activity": "गतिविधि", "Commands": "कमांड्स", "Panic": "पैनिक",
+    "Commands for your chats": "आपकी चैट्स के कमांड्स",
+    "Only you can use these, and the bot deletes the command message.": "इन्हें सिर्फ़ आप चला सकते हैं, और बॉट कमांड वाला मैसेज हटा देता है।",
+    "Add Rule": "रूल जोड़ें", "Add Snippet": "स्निपेट जोड़ें", "No keyword rules yet.": "अभी कोई कीवर्ड रूल नहीं।",
+    "No snippets yet.": "अभी कोई स्निपेट नहीं।",
+    "When someone writes a keyword in a private chat, your account answers for you.":
+        "जब कोई प्राइवेट चैट में कीवर्ड लिखता है, तो आपका अकाउंट आपकी तरफ़ से जवाब देता है।",
+    "Type .name in any chat and your message turns into the saved text.":
+        "किसी भी चैट में .नाम लिखें और आपका मैसेज सेव किए गए टेक्स्ट में बदल जाएगा।",
+    "Send the keyword and the reply, separated by": "कीवर्ड और जवाब भेजें, इनके बीच में लगाएँ",
+    "Send the name and the text, separated by": "नाम और टेक्स्ट भेजें, इनके बीच में लगाएँ",
+    "Use the format: keyword | reply": "इस फ़ॉर्मैट में भेजें: कीवर्ड | जवाब",
+    "Use the format: name | text": "इस फ़ॉर्मैट में भेजें: नाम | टेक्स्ट",
+    "Keyword saved": "कीवर्ड सेव हुआ", "Removed": "हटाया गया", "Not found": "नहीं मिला",
+    "Snippet saved. Use it with": "स्निपेट सेव हुआ। इससे इस्तेमाल करें",
+    "Scheduled messages": "शेड्यूल्ड मैसेज", "Nothing scheduled.": "कुछ शेड्यूल नहीं है।",
+    "Recent activity": "हाल की गतिविधि", "Nothing yet.": "अभी कुछ नहीं।", "Scheduled for": "शेड्यूल किया गया",
+    "Panic done": "पैनिक पूरा", "Repeaters Stopped": "रिपीटर बंद", "Shh Chats Off": "शह चैट बंद",
+    "Scheduled Cleared": "शेड्यूल्ड हटाए", "Away Mode": "अवे मोड",
+    "Saved message": "सेव किया गया मैसेज", "Reply to a message with .save": "किसी मैसेज को रिप्लाई करके .save लिखें",
+    "Could not save that message.": "वह मैसेज सेव नहीं हो सका।", "Translation": "अनुवाद",
+    "Translation failed, try again.": "अनुवाद नहीं हो सका, दोबारा कोशिश करें।",
+    "Shh is now": "शह अब", "ON": "चालू", "Shh ended": "शह खत्म", "Shh log": "शह लॉग", "Ends": "खत्म",
+    "Allowed Words": "अनुमत शब्द", "Allowed Media": "अनुमत मीडिया", "Log": "लॉग", "none": "कोई नहीं", "never": "कभी नहीं",
+    "Blocked words": "ब्लॉक किए शब्द", "Link filter": "लिंक फ़िल्टर", "Flood filter": "फ़्लड फ़िल्टर",
+    "Choose your language.": "अपनी भाषा चुनें।", "Done.": "हो गया।",
+    "Media successfully archived": "मीडिया सफलतापूर्वक आर्काइव हुआ", "Media retrieval failed. Please try again.":
+        "मीडिया नहीं मिल सका। कृपया दोबारा कोशिश करें।",
+    "No supported media found in the replied message.": "रिप्लाई किए गए मैसेज में कोई सपोर्टेड मीडिया नहीं मिला।",
+    "Your access has been disabled.": "आपका एक्सेस बंद कर दिया गया है।",
+})
+
+
+
 # Every emoji the UI uses has a NAME and a normal-emoji fallback. If you give a name a
 # custom (animated) emoji ID it is used everywhere that name appears, in text and buttons.
 EMOJI = {
@@ -125,7 +303,8 @@ EMOJI = {
     "pay": "💳", "box": "📦", "money": "💰", "calendar": "📅", "bell": "🔔", "ban": "🚫",
     "admin": "🛠", "mail": "✉️", "link": "🔗", "channel": "📢", "group": "👥",
     "stats": "📊", "lock": "🔒", "ghost": "👻", "home": "🏠", "bank": "🏦",
-    "party": "🎉", "pin": "📝", "spin": "🌀",
+    "party": "🎉", "pin": "📝", "spin": "🌀", "globe": "🌐", "trash": "🗑", "gift": "🎁",
+    "save": "💾", "list": "📋", "tools": "🧰", "play": "▶️", "chat": "💬",
 }
 # Built-in premium (animated) emoji IDs. Anything saved in emoji_ids.json (via /emojis)
 # overrides these. Names without an ID here simply keep their normal emoji.
@@ -317,8 +496,12 @@ def home_keyboard(is_admin=False):
         [btn("My Statistics", "stats", callback_data="mystats"),
          btn("Membership", "ok", callback_data="checkjoin")],
         [btn("Buy Premium", "pay", style="primary", callback_data="buy")],
-        [btn("Repeated Message", "bolt", callback_data="axmenu")],
-        [btn("Updates", "channel", url="https://t.me/linksfromerebus")],
+        [btn("Repeated Message", "bolt", callback_data="axmenu"),
+         btn("Deleted Messages", "trash", callback_data="delmenu")],
+        [btn("Auto Reply", "chat", callback_data="afkmenu"),
+         btn("Tools", "tools", callback_data="toolsmenu")],
+        [btn("Language", "globe", callback_data="langmenu"),
+         btn("Updates", "channel", url="https://t.me/linksfromerebus")],
     ]
     if is_admin:
         rows.append([btn("Admin Panel", "admin", callback_data="admin")])
@@ -341,11 +524,15 @@ def join_keyboard():
 def admin_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
         [btn("Statistics", "stats", callback_data="astats"),
-         btn("Users", "user", callback_data="ausers")],
-        [btn("Premium Users", "star", callback_data="apremium"),
+         btn("Revenue", "money", callback_data="arevenue")],
+        [btn("All Users", "user", callback_data="ausers:0"),
+         btn("Premium Users", "star", callback_data="apremium")],
+        [btn("User Info", "id", callback_data="aact:info"),
          btn("Broadcast", "channel", callback_data="abroadcast")],
-        [btn("User Info", "id", callback_data="auserinfo"),
-         btn("Ban / Unban", "ban", style="danger", callback_data="aban")],
+        [btn("Give Premium", "gift", style="success", callback_data="aact:prem"),
+         btn("Remove Premium", "err", callback_data="aact:unprem")],
+        [btn("Ban User", "ban", style="danger", callback_data="aact:ban"),
+         btn("Unban User", "ok", callback_data="aact:unban")],
         [btn("Message One User", "mail", callback_data="amsg")],
         [btn("Main Menu", "home", callback_data="home")],
     ])
@@ -454,6 +641,51 @@ def init_db():
             chat_id INTEGER NOT NULL,
             PRIMARY KEY(connection_id, chat_id)
         );
+        CREATE TABLE IF NOT EXISTS ax_presets (
+            user_id INTEGER NOT NULL, name TEXT NOT NULL, messages TEXT NOT NULL,
+            interval REAL NOT NULL, interval_max REAL, count INTEGER NOT NULL,
+            PRIMARY KEY(user_id, name)
+        );
+        CREATE TABLE IF NOT EXISTS chat_rules (
+            connection_id TEXT NOT NULL, chat_id INTEGER NOT NULL,
+            block_words TEXT NOT NULL DEFAULT '[]', no_links INTEGER NOT NULL DEFAULT 0,
+            antispam INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY(connection_id, chat_id)
+        );
+        CREATE TABLE IF NOT EXISTS afk_config (
+            user_id INTEGER PRIMARY KEY, enabled INTEGER NOT NULL DEFAULT 0, message TEXT,
+            until REAL, sched_on INTEGER NOT NULL DEFAULT 0, start_min INTEGER, end_min INTEGER
+        );
+        CREATE TABLE IF NOT EXISTS afk_chat (
+            connection_id TEXT NOT NULL, chat_id INTEGER NOT NULL, message TEXT NOT NULL,
+            PRIMARY KEY(connection_id, chat_id)
+        );
+        CREATE TABLE IF NOT EXISTS kw_rules (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+            keyword TEXT NOT NULL, reply TEXT NOT NULL, UNIQUE(user_id, keyword)
+        );
+        CREATE TABLE IF NOT EXISTS snippets (
+            user_id INTEGER NOT NULL, name TEXT NOT NULL, text TEXT NOT NULL,
+            PRIMARY KEY(user_id, name)
+        );
+        CREATE TABLE IF NOT EXISTS scheduled (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, kind TEXT NOT NULL, owner_id INTEGER NOT NULL,
+            connection_id TEXT NOT NULL, chat_id INTEGER NOT NULL, label TEXT,
+            text TEXT, message_id INTEGER, run_at REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_sched_run ON scheduled(run_at);
+        CREATE TABLE IF NOT EXISTS msg_cache (
+            connection_id TEXT NOT NULL, chat_id INTEGER NOT NULL, message_id INTEGER NOT NULL,
+            sender_id INTEGER, sender_name TEXT, sender_username TEXT,
+            kind TEXT NOT NULL, text TEXT, file_id TEXT, sent_at TEXT NOT NULL,
+            PRIMARY KEY(connection_id, chat_id, message_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_cache_time ON msg_cache(sent_at);
+        CREATE TABLE IF NOT EXISTS activity (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL, ts REAL NOT NULL,
+            kind TEXT NOT NULL, chat_id INTEGER, label TEXT, detail TEXT
+        );
+        CREATE INDEX IF NOT EXISTS idx_activity_user ON activity(user_id, ts);
         CREATE INDEX IF NOT EXISTS idx_conn_owner ON business_connections(owner_id);
         """)
 
@@ -461,6 +693,26 @@ def init_db():
         cols = [r["name"] for r in con.execute("PRAGMA table_info(users)")]
         if "custom_limit" not in cols:
             con.execute("ALTER TABLE users ADD COLUMN custom_limit INTEGER")
+
+        # Migrations for the newer features (safe to run on every start).
+        def add_col(table, name, ddl):
+            existing = [r["name"] for r in con.execute(f"PRAGMA table_info({table})")]
+            if name in existing:
+                return False
+            con.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+            return True
+
+        add_col("ax_config", "interval_max", "REAL")
+        for col, ddl in (("until", "REAL"), ("allow_words", "TEXT"), ("allow_media", "TEXT"),
+                         ("log", "INTEGER NOT NULL DEFAULT 0"), ("label", "TEXT")):
+            add_col("shh_chats", col, ddl)
+        add_col("users", "lang", "TEXT NOT NULL DEFAULT 'en'")
+        add_col("users", "save_deleted", "INTEGER NOT NULL DEFAULT 1")
+        add_col("users", "tz_offset", "INTEGER NOT NULL DEFAULT 0")
+        add_col("users", "trial_notified", "INTEGER NOT NULL DEFAULT 0")
+        if add_col("users", "trial_until", "TEXT"):
+            # everybody who already exists gets the free trial, starting now
+            con.execute("UPDATE users SET trial_until=?", ((now() + timedelta(days=TRIAL_DAYS)).isoformat(),))
 
         # Migration: build today's/old counters from the existing archive history.
         con.execute("""
@@ -480,16 +732,18 @@ def today():
 
 # ---- users ------------------------------------------------------------------
 def upsert_user(user):
+    """Create or refresh a user. A brand-new user starts with the free trial."""
     stamp = now().isoformat()
+    trial_end = (now() + timedelta(days=TRIAL_DAYS)).isoformat()
     with db() as con:
         con.execute("""
-            INSERT INTO users(user_id, username, first_name, joined_at, last_seen)
-            VALUES(?,?,?,?,?)
+            INSERT INTO users(user_id, username, first_name, joined_at, last_seen, trial_until)
+            VALUES(?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
               username=excluded.username,
               first_name=excluded.first_name,
               last_seen=excluded.last_seen
-        """, (user.id, user.username, user.first_name, stamp, stamp))
+        """, (user.id, user.username, user.first_name, stamp, stamp, trial_end))
 
 
 def get_user(user_id):
@@ -500,6 +754,16 @@ def get_user(user_id):
 def is_banned(user_id):
     row = get_user(user_id)
     return bool(row and row["banned"])
+
+
+def find_user(token):
+    """'@username' or a numeric ID -> the users row (only people who started the bot)."""
+    token = (token or "").strip()
+    if not token:
+        return None
+    if token.lstrip("-").isdigit():
+        return get_user(int(token))
+    return find_registered_user(token)
 
 
 def find_registered_user(username):
@@ -574,6 +838,237 @@ def pending_payments(user_id=None):
         ).fetchone()["n"]
 
 
+# ---- trial, language, links, durations (shared helpers) -----------------------------
+def trial_expiry(user_id):
+    """End of the free trial, or None when there is none / it is over."""
+    row = get_user(user_id)
+    if not row or not row["trial_until"]:
+        return None
+    try:
+        end = datetime.fromisoformat(row["trial_until"])
+    except ValueError:
+        return None
+    return end if end > now() else None
+
+
+def has_pro(user_id):
+    """Premium features (deleted-message saver): paid/granted premium OR the free trial."""
+    return is_premium(user_id) or trial_expiry(user_id) is not None
+
+
+def deleted_saver_active(user_id):
+    row = get_user(user_id)
+    return bool(row and row["save_deleted"] and has_pro(user_id))
+
+
+def fmt_left(delta):
+    secs = max(0, int(delta.total_seconds()))
+    d, rem = divmod(secs, 86400)
+    h, rem = divmod(rem, 3600)
+    m = rem // 60
+    if d:
+        return f"{d}d {h}h"
+    if h:
+        return f"{h}h {m}m"
+    return f"{max(m, 1)}m"
+
+
+def pro_status_text(user_id):
+    if is_premium(user_id):
+        return sc("Active")
+    end = trial_expiry(user_id)
+    if end:
+        return f"{sc('Free Trial')} ({fmt_left(end - now())})"
+    return sc("Locked")
+
+
+_LANG_CACHE = {}
+
+
+def get_lang(user_id):
+    if user_id is None:
+        return "en"
+    lang = _LANG_CACHE.get(user_id)
+    if lang is None:
+        row = get_user(user_id)
+        lang = (row["lang"] if row and row["lang"] else "en")
+        _LANG_CACHE[user_id] = lang
+    return lang
+
+
+def set_lang(user_id, lang):
+    with db() as con:
+        con.execute("UPDATE users SET lang=? WHERE user_id=?", (lang, user_id))
+    _LANG_CACHE[user_id] = lang
+
+
+@contextmanager
+def use_lang(user_id):
+    """Write texts in THIS user's language (used when messaging someone else)."""
+    token = _LANG.set(get_lang(user_id))
+    try:
+        yield
+    finally:
+        _LANG.reset(token)
+
+
+def user_tz(user_id):
+    row = get_user(user_id)
+    return int(row["tz_offset"]) if row and row["tz_offset"] is not None else 0
+
+
+def fmt_tz(minutes):
+    sign = "+" if minutes >= 0 else "-"
+    h, m = divmod(abs(minutes), 60)
+    return f"UTC{sign}{h}" + (f":{m:02d}" if m else "")
+
+
+def parse_tz(text):
+    m = re.fullmatch(r"(?:utc)?\s*([+-])?\s*(\d{1,2})(?::?(\d{2}))?", text.strip().lower())
+    if not m:
+        return None
+    minutes = int(m.group(2)) * 60 + int(m.group(3) or 0)
+    if m.group(1) == "-":
+        minutes = -minutes
+    return minutes if -12 * 60 <= minutes <= 14 * 60 else None
+
+
+def fmt_local(ts, user_id, with_date=True):
+    local = datetime.fromtimestamp(ts, timezone.utc) + timedelta(minutes=user_tz(user_id))
+    return local.strftime("%d %b %H:%M" if with_date else "%H:%M")
+
+
+_DUR_RE = re.compile(r"^(\d+(?:\.\d+)?)([smhd])$", re.I)
+
+
+def parse_duration(text):
+    m = _DUR_RE.match((text or "").strip())
+    if not m:
+        return None
+    return float(m.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[m.group(2).lower()]
+
+
+def parse_clock(text):
+    m = re.fullmatch(r"(\d{1,2}):(\d{2})", (text or "").strip())
+    if not m:
+        return None
+    h, mi = int(m.group(1)), int(m.group(2))
+    return h * 60 + mi if h < 24 and mi < 60 else None
+
+
+def parse_when(token, user_id):
+    """'30s' '10m' '2h' '1d'  or a clock time '21:30' (next time it happens, in YOUR timezone)."""
+    dur = parse_duration(token)
+    if dur is not None:
+        return time.time() + dur
+    minutes = parse_clock(token)
+    if minutes is None:
+        return None
+    tz = user_tz(user_id)
+    local = now() + timedelta(minutes=tz)
+    target = local.replace(hour=minutes // 60, minute=minutes % 60, second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return (target - timedelta(minutes=tz)).timestamp()
+
+
+def name_link(user_id, username=None, first_name=None, last_name=None):
+    """@username when there is one, otherwise the profile name as a tap-to-open link."""
+    if username:
+        return f"@{esc(username)}"
+    full = " ".join(p for p in (first_name, last_name) if p) or str(user_id)
+    return f'<a href="tg://user?id={user_id}">{esc(full)}</a>'
+
+
+def chat_link(chat):
+    if chat.type == "private":
+        return name_link(chat.id, chat.username, chat.first_name, chat.last_name)
+    title = chat.title or str(chat.id)
+    if chat.username:
+        return f'<a href="https://t.me/{esc(chat.username)}">{esc(title)}</a>'
+    return esc(title)
+
+
+def plain_label(chat):
+    """Short plain-text name of a chat (stored in logs): @username or the profile name."""
+    if chat.username:
+        return f"@{chat.username}"
+    if chat.type == "private":
+        return " ".join(p for p in (chat.first_name, chat.last_name) if p) or str(chat.id)
+    return chat.title or str(chat.id)
+
+
+def chat_ref(chat_id, label=None):
+    """HTML for a stored chat label: @username, or the name as a link to the profile."""
+    if label and label.startswith("@"):
+        return esc(label)
+    shown = esc(label or chat_id)
+    return f'<a href="tg://user?id={chat_id}">{shown}</a>' if chat_id and chat_id > 0 else shown
+
+
+def db_user_link(user_id):
+    row = get_user(user_id)
+    if row:
+        return name_link(user_id, row["username"], row["first_name"])
+    return name_link(user_id)
+
+
+def log_activity(user_id, kind, chat_id=None, label=None, detail=""):
+    try:
+        with db() as con:
+            con.execute("INSERT INTO activity(user_id, ts, kind, chat_id, label, detail) VALUES(?,?,?,?,?,?)",
+                        (user_id, time.time(), kind, chat_id, label, str(detail)[:200]))
+    except Exception:
+        logging.exception("activity log failed")
+
+
+# ---- message contents (used by the deleted-message saver, .save and the shh log) ------
+MEDIA_KINDS = ("photo", "video", "voice", "audio", "document", "animation", "video_note", "sticker")
+
+
+def msg_kind(m):
+    if m.text:
+        return "text"
+    for kind in MEDIA_KINDS:
+        if getattr(m, kind, None):
+            return kind
+    return "other"
+
+
+def msg_payload(m):
+    kind = msg_kind(m)
+    if kind == "text":
+        return {"kind": "text", "text": m.text, "file_id": None}
+    if kind == "photo":
+        return {"kind": "photo", "text": m.caption or "", "file_id": m.photo[-1].file_id}
+    if kind in MEDIA_KINDS:
+        return {"kind": kind, "text": m.caption or "", "file_id": getattr(m, kind).file_id}
+    return {"kind": "other", "text": "[unsupported message type]", "file_id": None}
+
+
+_CAPTION_SENDERS = {
+    "photo": ("send_photo", "photo"), "video": ("send_video", "video"),
+    "voice": ("send_voice", "voice"), "audio": ("send_audio", "audio"),
+    "document": ("send_document", "document"), "animation": ("send_animation", "animation"),
+}
+
+
+async def send_payload(chat_id, p, header):
+    """Send a stored message (text or file_id) to `chat_id` with an HTML header above it."""
+    kind, text = p["kind"], p.get("text") or ""
+    if kind in ("text", "other") or not p.get("file_id"):
+        return await bot.send_message(chat_id, header + ("\n\n" + esc(text[:3500]) if text else ""))
+    if kind in _CAPTION_SENDERS:
+        meth, arg = _CAPTION_SENDERS[kind]
+        cap = header + ("\n\n" + esc(text[:600]) if text else "")
+        return await getattr(bot, meth)(chat_id, **{arg: p["file_id"]}, caption=cap)
+    # stickers and video notes cannot carry a caption: send the file, then the header under it
+    sent = await (bot.send_sticker(chat_id, p["file_id"]) if kind == "sticker"
+                  else bot.send_video_note(chat_id, p["file_id"]))
+    await bot.send_message(chat_id, header, reply_to_message_id=sent.message_id)
+    return sent
+
+
 # ---- business connections -------------------------------------------------------
 def save_connection(connection: BusinessConnection):
     with db() as con:
@@ -586,7 +1081,10 @@ def save_connection(connection: BusinessConnection):
                 is_enabled = excluded.is_enabled
         """, (connection.id, connection.user.id, connection.user_chat_id,
               1 if connection.is_enabled else 0))
-    _CONN_OWNER[connection.id] = connection.user.id
+    if connection.is_enabled:
+        _CONN_OWNER[connection.id] = connection.user.id
+    else:
+        _CONN_OWNER.pop(connection.id, None)
     logging.info("Saved Business connection: %s (owner %s)", connection.id, connection.user.id)
 
 
@@ -609,14 +1107,25 @@ def home_text(user_id, name):
     plan = f"{sc('Premium')} ({expiry:%d %b %Y})" if expiry else sc("Free")
     used = f"{daily_count(user_id)} / {'∞' if limit is None else limit}"
     return "\n".join([
-        bq(f"{E('user')} {sc('<tg-emoji emoji-id="5375338737028841420">🌀</tg-emoji>Welcome')}, {esc(name or 'friend')}"),
+        bq(f"{E('user')} {sc('Welcome')}, {esc(name or 'friend')}"),
         head("title", "Media Archive Bot", " ❗️"),
         "",
         row("star", "Plan", plan),
         row("camera", "Today", used),
+        row("trash", "Deleted Saver", pro_status_text(user_id)),
         SEP,
         f"{E('bolt')} {sc('Reply to any media with')} <code>{TRIGGER_WORD}</code>",
     ])
+
+
+def privacy_lines():
+    """What we tell users about storage. It always matches what the bot really does."""
+    if SAVE_MEDIA_LOCALLY:
+        return [f"{E('box')} {sc('A backup copy is also kept in our private archive.')}"]
+    if TG_MEDIA_BACKUP:
+        return [f"{E('lock')} {sc('No copy is stored on our server. You can only view your saved photos here in the bot.')}",
+                f"{E('box')} {sc('A private recovery copy is kept in the bot owner Telegram archive.')}"]
+    return [f"{E('lock')} {sc('No backup is saved, for your privacy. You can only view your saved photos here in the bot.')}"]
 
 
 def howto_text():
@@ -627,11 +1136,11 @@ def howto_text():
         row("pin", "Step 2", sc("Settings → Business → Chatbots → add this bot")),
         row("pin", "Step 3", f"{sc('In any chat, reply to a media with')} <code>{TRIGGER_WORD}</code>"),
         row("box", "Step 4", sc("The copy arrives here, in your private chat")),
-        row("link", "Youtube", "https://youtube.com/shorts/KRKAUY3g7wk?si=mRH6Obpbkyp4V5h7"),
-
         SEP,
-        f"{E('box')} {sc('No backup copy is kept in our Datavase for Privacy.')}",
-        f"{E('lock')} {sc('Only you (the account owner) can see in the bot.')}",
+        *privacy_lines(),
+        f"{E('lock')} {sc('Only you (the account owner) can trigger it.')}",
+        SEP,
+        f"{E('play')} <a href=\"{html.escape(TUTORIAL_URL, quote=True)}\">{sc('Watch the video tutorial')}</a>",
     ])
 
 
@@ -660,15 +1169,17 @@ async def membership_ok(user_id):
 
 async def notify_premium(user_id, expiry):
     """Tell the user their premium is active. Returns False if they can't be reached."""
-    text = "\n".join([
-        bq(f"{E('party')} {sc('Congratulations!')}"),
-        head("star", "Premium Activated", " ❗️"),
-        "",
-        row("calendar", "Valid Till", f"{expiry:%Y-%m-%d %H:%M} UTC"),
-        row("bolt", "Daily Limit", sc("Unlimited")),
-    ])
     try:
-        await bot.send_message(user_id, text, reply_markup=back_keyboard())
+        with use_lang(user_id):
+            text = "\n".join([
+                bq(f"{E('party')} {sc('Congratulations!')}"),
+                head("star", "Premium Activated", " ❗️"),
+                "",
+                row("calendar", "Valid Till", f"{expiry:%Y-%m-%d %H:%M} UTC"),
+                row("bolt", "Daily Limit", sc("Unlimited")),
+                row("trash", "Deleted Saver", sc("Active")),
+            ])
+            await bot.send_message(user_id, text, reply_markup=back_keyboard())
         return True
     except Exception:
         logging.exception("Could not notify %s about premium", user_id)
@@ -679,6 +1190,8 @@ class AdminFlow(StatesGroup):
     broadcast_text = State()
     dm_target = State()
     dm_text = State()
+    target = State()
+    prem_days = State()
 
 
 class PayFlow(StatesGroup):
@@ -726,6 +1239,9 @@ async def start(message: Message, state: FSMContext):
     uid = message.from_user.id
     await show_panel(chat, home_text(uid, message.from_user.first_name),
                      home_keyboard(uid == OWNER_ID))
+    row_ = get_user(uid)
+    if row_ and not row_["trial_notified"]:      # new users (and old ones who missed it) hear about the trial
+        await send_trial_intro(uid)
 
 
 @dp.callback_query(F.data == "checkjoin")
@@ -741,6 +1257,9 @@ async def check_join(callback: CallbackQuery):
         await safe_edit(callback, home_text(uid, callback.from_user.first_name),
                         home_keyboard(uid == OWNER_ID))
         await callback.answer("Verified!")
+        row_ = get_user(uid)
+        if row_ and not row_["trial_notified"]:
+            await send_trial_intro(uid)
     else:
         await callback.answer("You must join both chats first.", show_alert=True)
 
@@ -758,7 +1277,7 @@ async def home(callback: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "howto")
 async def howto(callback: CallbackQuery):
-    await safe_edit(callback, howto_text(), back_keyboard())
+    await safe_edit(callback, howto_text(), back_keyboard([btn("Watch Tutorial", "play", url=TUTORIAL_URL)]))
     await callback.answer()
 
 
@@ -773,6 +1292,7 @@ async def my_premium(callback: CallbackQuery):
             row("calendar", "Active Until", f"{expiry:%Y-%m-%d %H:%M} UTC"),
             row("bolt", "Daily Limit", sc("Unlimited")),
             row("camera", "Used Today", daily_count(uid)),
+            row("trash", "Deleted Saver", pro_status_text(uid)),
         ])
         kb = back_keyboard([btn("Extend Premium", "pay", style="primary", callback_data="buy")])
     else:
@@ -781,6 +1301,7 @@ async def my_premium(callback: CallbackQuery):
             "",
             row("bolt", "Daily Limit", user_daily_limit(uid)),
             row("camera", "Used Today", daily_count(uid)),
+            row("trash", "Deleted Saver", pro_status_text(uid)),
             SEP,
             f"{E('star')} {sc('Go premium for unlimited archives.')}",
         ])
@@ -824,49 +1345,164 @@ async def admin_panel(callback: CallbackQuery):
     await callback.answer()
 
 
+def money(n):
+    return f"₹{int(n):,}"
+
+
+def _revenue(con, since=None):
+    """Money that users PAID through the bot (approved payments). Premium you give with
+    /premium or the Give Premium button is never counted here."""
+    sql = "SELECT COALESCE(SUM(amount),0) s, COUNT(*) n FROM payments WHERE status='approved'"
+    args = ()
+    if since is not None:
+        sql += " AND reviewed_at>=?"
+        args = (since.isoformat(),)
+    r = con.execute(sql, args).fetchone()
+    return r["s"], r["n"]
+
+
 @dp.callback_query(F.data == "astats")
 async def admin_stats(callback: CallbackQuery):
     if not await admin_only(callback):
         return
-    day_start = now().replace(hour=0, minute=0, second=0, microsecond=0).isoformat()
+    d0 = now().replace(hour=0, minute=0, second=0, microsecond=0)
+    day_start = d0.isoformat()
+    stamp = now().isoformat()
     with db() as con:
         total = con.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
         active = con.execute("SELECT COUNT(*) n FROM users WHERE last_seen>=?",
                              ((now() - timedelta(days=7)).isoformat(),)).fetchone()["n"]
-        premium = con.execute("SELECT COUNT(*) n FROM premium WHERE expires_at>?",
-                              (now().isoformat(),)).fetchone()["n"]
+        premium = con.execute("SELECT COUNT(*) n FROM premium WHERE expires_at>?", (stamp,)).fetchone()["n"]
+        trial = con.execute(
+            "SELECT COUNT(*) n FROM users WHERE trial_until>? AND user_id NOT IN "
+            "(SELECT user_id FROM premium WHERE expires_at>?)", (stamp, stamp)).fetchone()["n"]
         banned = con.execute("SELECT COUNT(*) n FROM users WHERE banned=1").fetchone()["n"]
         joined = con.execute("SELECT COUNT(*) n FROM users WHERE joined_at>=?", (day_start,)).fetchone()["n"]
         archived = con.execute("SELECT COALESCE(SUM(count),0) n FROM usage_daily WHERE day=?",
                                (today(),)).fetchone()["n"]
+        rev_total, rev_n = _revenue(con)
+        rev_today, _ = _revenue(con, d0)
+        rev_month, _ = _revenue(con, d0.replace(day=1))
     text = "\n".join([
         bq(f"{E('stats')} {sc('Admin statistics')}"),
         "",
         row("group", "Total Users", total),
         row("bolt", "Active 7 Days", active),
         row("star", "Premium Users", premium),
+        row("gift", "On Free Trial", trial),
         row("ban", "Banned Users", banned),
         row("title", "Joined Today", joined),
         row("camera", "Archives Today", archived),
         row("pay", "Pending Payments", pending_payments()),
+        SEP,
+        row("money", "Revenue Total", f"{money(rev_total)} ({rev_n} {sc('sales')})"),
+        row("money", "Revenue Today", money(rev_today)),
+        row("money", "Revenue Month", money(rev_month)),
     ])
     await safe_edit(callback, text, admin_keyboard())
     await callback.answer()
 
 
-@dp.callback_query(F.data == "ausers")
+@dp.callback_query(F.data == "arevenue")
+async def admin_revenue(callback: CallbackQuery):
+    if not await admin_only(callback):
+        return
+    d0 = now().replace(hour=0, minute=0, second=0, microsecond=0)
+    with db() as con:
+        total = _revenue(con)
+        today_ = _revenue(con, d0)
+        week = _revenue(con, d0 - timedelta(days=6))
+        days30 = _revenue(con, d0 - timedelta(days=29))
+        month = _revenue(con, d0.replace(day=1))
+        months = con.execute(
+            "SELECT substr(reviewed_at,1,7) m, SUM(amount) s, COUNT(*) n FROM payments "
+            "WHERE status='approved' GROUP BY m ORDER BY m DESC LIMIT 6").fetchall()
+        plans = con.execute(
+            "SELECT months, COUNT(*) n, SUM(amount) s FROM payments WHERE status='approved' "
+            "GROUP BY months ORDER BY months").fetchall()
+
+    def line(label, pair):
+        return row("money", label, f"{money(pair[0])} ({pair[1]})")
+
+    lines = [bq(f"{E('money')} {sc('Premium revenue')}"), "",
+             line("All Time", total), line("Today", today_), line("Last 7 Days", week),
+             line("Last 30 Days", days30), line("This Month", month)]
+    if months:
+        lines += [SEP, f"{E('calendar')} <b>{sc('By month')}</b>"]
+        lines += [f"{r['m']} ➛ {money(r['s'])} ({r['n']})" for r in months]
+    if plans:
+        lines += [SEP, f"{E('star')} <b>{sc('By plan')}</b>"]
+        lines += [f"{sc(month_label(r['months']))} ➛ {r['n']} × ➛ {money(r['s'])}" for r in plans]
+    lines += [SEP, f"{E('lock')} {sc('Only plans users bought and you approved are counted. Premium you gave yourself is not.')}"]
+    await safe_edit(callback, "\n".join(lines), admin_keyboard())
+    await callback.answer()
+
+
+# ---- all users list (pages) ----------------------------------------------------------
+USERS_PER_PAGE = 15
+
+
+def users_page(page):
+    with db() as con:
+        total = con.execute("SELECT COUNT(*) n FROM users").fetchone()["n"]
+        pages = max(1, -(-total // USERS_PER_PAGE))
+        page = min(max(page, 0), pages - 1)
+        rows = con.execute(
+            "SELECT user_id, username, first_name, banned FROM users "
+            "ORDER BY joined_at DESC LIMIT ? OFFSET ?", (USERS_PER_PAGE, page * USERS_PER_PAGE)).fetchall()
+        prem = {r["user_id"] for r in con.execute(
+            "SELECT user_id FROM premium WHERE expires_at>?", (now().isoformat(),))}
+    lines = [bq(f"{E('group')} {sc('All users')} ({total})"),
+             f"{sc('Page')} {page + 1}/{pages}", ""]
+    for i, r in enumerate(rows, page * USERS_PER_PAGE + 1):
+        flags = (" ⭐" if r["user_id"] in prem else "") + (" 🚫" if r["banned"] else "")
+        lines.append(f"{i}. {name_link(r['user_id'], r['username'], r['first_name'])} "
+                     f"➛ <code>{r['user_id']}</code>{flags}")
+    nav = []
+    if page > 0:
+        nav.append(btn("◀ Prev", callback_data=f"ausers:{page - 1}"))
+    nav.append(btn(f"{page + 1}/{pages}", callback_data="noop"))
+    if page < pages - 1:
+        nav.append(btn("Next ▶", callback_data=f"ausers:{page + 1}"))
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        nav,
+        [btn("Download List", "box", callback_data="ausersfile")],
+        [btn("Admin Panel", "admin", callback_data="admin")],
+    ])
+    return "\n".join(lines), kb
+
+
+@dp.callback_query(F.data.startswith("ausers:"))
 async def admin_users(callback: CallbackQuery):
+    if not await admin_only(callback):
+        return
+    text, kb = users_page(int(callback.data.split(":")[1]))
+    await safe_edit(callback, text, kb)
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "noop")
+async def noop(callback: CallbackQuery):
+    await callback.answer()
+
+
+@dp.callback_query(F.data == "ausersfile")
+async def admin_users_file(callback: CallbackQuery):
     if not await admin_only(callback):
         return
     with db() as con:
         rows = con.execute(
-            "SELECT user_id, username, first_name FROM users ORDER BY joined_at DESC LIMIT 25"
-        ).fetchall()
-    lines = [bq(f"{E('group')} {sc('Latest 25 users')}"), ""]
+            "SELECT u.user_id, u.username, u.first_name, u.joined_at, u.last_seen, u.banned, "
+            "p.expires_at FROM users u LEFT JOIN premium p ON p.user_id=u.user_id "
+            "ORDER BY u.joined_at").fetchall()
+    buf = StringIO()
+    writer = csv.writer(buf)
+    writer.writerow(["user_id", "username", "first_name", "joined_at", "last_seen", "banned", "premium_until"])
     for r in rows:
-        label = f"@{r['username']}" if r["username"] else (r["first_name"] or "unknown")
-        lines.append(f"{E('user')} {esc(label)} ➛ <code>{r['user_id']}</code>")
-    await safe_edit(callback, "\n".join(lines), admin_keyboard())
+        writer.writerow([r["user_id"], r["username"] or "", r["first_name"] or "", r["joined_at"],
+                         r["last_seen"], r["banned"], r["expires_at"] or ""])
+    doc = BufferedInputFile(buf.getvalue().encode("utf-8-sig"), filename=f"users_{today()}.csv")
+    remember(await callback.message.answer_document(doc, caption=f"{len(rows)} users"))
     await callback.answer()
 
 
@@ -876,7 +1512,7 @@ async def admin_premium_list(callback: CallbackQuery):
         return
     with db() as con:
         rows = con.execute("""
-            SELECT u.username, u.user_id, p.expires_at
+            SELECT u.username, u.first_name, u.user_id, p.expires_at
             FROM premium p JOIN users u ON u.user_id=p.user_id
             WHERE p.expires_at>? ORDER BY p.expires_at
         """, (now().isoformat(),)).fetchall()
@@ -884,43 +1520,129 @@ async def admin_premium_list(callback: CallbackQuery):
     if not rows:
         lines.append(sc("None yet."))
     for r in rows[:40]:
-        name = f"@{r['username']}" if r["username"] else str(r["user_id"])
-        lines.append(f"{E('star')} {esc(name)} ➛ {r['expires_at'][:10]}")
+        lines.append(f"{E('star')} {name_link(r['user_id'], r['username'], r['first_name'])} ➛ {r['expires_at'][:10]}")
     await safe_edit(callback, "\n".join(lines), admin_keyboard())
     await callback.answer()
 
 
-@dp.callback_query(F.data == "auserinfo")
-async def admin_userinfo_help(callback: CallbackQuery):
+# ---- admin actions by button: info / ban / unban / give / remove premium --------------
+ADMIN_PROMPTS = {
+    "info": "Send the @username or numeric ID of the user to look up.",
+    "ban": "Send the @username or numeric ID of the user to ban.",
+    "unban": "Send the @username or numeric ID of the user to unban.",
+    "prem": "Send the @username or numeric ID of the user to give premium to.",
+    "unprem": "Send the @username or numeric ID of the user to remove premium from.",
+}
+
+
+def user_info_text(user):
+    uid = user["user_id"]
+    expiry = premium_expiry(uid)
+    trial = trial_expiry(uid)
+    limit = user_daily_limit(uid)
+    with db() as con:
+        total = con.execute("SELECT COUNT(*) n FROM archives WHERE user_id=?", (uid,)).fetchone()["n"]
+        conns = con.execute("SELECT COUNT(*) n FROM business_connections WHERE owner_id=?", (uid,)).fetchone()["n"]
+    return "\n".join([
+        bq(f"{E('user')} {name_link(uid, user['username'], user['first_name'])}"),
+        "",
+        row("id", "ID", f"<code>{uid}</code>"),
+        row("ban", "Banned", sc(str(bool(user["banned"])))),
+        row("star", "Premium", f"{expiry:%Y-%m-%d %H:%M} UTC" if expiry else sc("No")),
+        row("gift", "Free Trial", f"{trial:%Y-%m-%d %H:%M} UTC" if trial else sc("No")),
+        row("trash", "Deleted Saver", sc("On") if user["save_deleted"] else sc("Off")),
+        row("globe", "Language", esc(user["lang"])),
+        row("bolt", "Daily Limit", "∞" if limit is None else limit),
+        row("camera", "Used Today", daily_count(uid)),
+        row("box", "Total Archived", total),
+        row("link", "Connections", conns),
+        row("calendar", "Joined", user["joined_at"][:16].replace("T", " ")),
+        row("time", "Last Seen", user["last_seen"][:16].replace("T", " ")),
+    ])
+
+
+@dp.callback_query(F.data.startswith("aact:"))
+async def admin_action_prompt(callback: CallbackQuery, state: FSMContext):
     if not await admin_only(callback):
         return
-    text = "\n".join([
-        bq(f"{E('id')} {sc('Admin commands')}"),
-        "",
-        "<code>/userinfo @username</code>",
-        "<code>/premium @username days</code>",
-        "<code>/removepremium @username</code>",
-        "<code>/setlimit @username number|default</code>",
-        "<code>/msg @username your message</code>",
-        "<code>/ban @username</code>  <code>/unban @username</code>",
-        "<code>/emojis</code>",
-    ])
-    await safe_edit(callback, text, admin_keyboard())
+    act = callback.data.split(":")[1]
+    if act not in ADMIN_PROMPTS:
+        return await callback.answer()
+    await state.set_state(AdminFlow.target)
+    await state.update_data(act=act)
+    remember(await callback.message.answer(
+        f"{E('id')} {sc(ADMIN_PROMPTS[act])}\n{sc('Send /cancel to stop.')}"))
     await callback.answer()
 
 
-@dp.callback_query(F.data == "aban")
-async def admin_ban_help(callback: CallbackQuery):
-    if not await admin_only(callback):
+async def apply_admin_action(chat, act, user):
+    uid = user["user_id"]
+    who = name_link(uid, user["username"], user["first_name"])
+    if act == "info":
+        return await notice(chat, user_info_text(user), ttl=90)
+    if act == "ban":
+        if uid == OWNER_ID:
+            return await notice(chat, f"{E('warn')} {sc('You cannot ban yourself.')}")
+        with db() as con:
+            con.execute("UPDATE users SET banned=1 WHERE user_id=?", (uid,))
+        return await notice(chat, f"{E('ban')} {sc('User banned')} ➛ {who}", ttl=8)
+    if act == "unban":
+        with db() as con:
+            con.execute("UPDATE users SET banned=0 WHERE user_id=?", (uid,))
+        return await notice(chat, f"{E('ok')} {sc('User unbanned')} ➛ {who}", ttl=8)
+    if act == "unprem":
+        with db() as con:
+            con.execute("DELETE FROM premium WHERE user_id=?", (uid,))
+        return await notice(chat, f"{E('ok')} {sc('Premium removed for')} {who}", ttl=8)
+
+
+@dp.message(AdminFlow.target)
+async def admin_action_target(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
         return
-    text = "\n".join([
-        bq(f"{E('ban')} {sc('Ban / unban')}"),
-        "",
-        "<code>/ban @username</code>",
-        "<code>/unban @username</code>",
-    ])
-    await safe_edit(callback, text, admin_keyboard())
-    await callback.answer()
+    chat = message.chat.id
+    await tidy(message)
+    if message.text == "/cancel":
+        await state.clear()
+        await sweep(chat)
+        return await notice(chat, f"{E('err')} {sc('Cancelled.')}", ttl=5)
+    user = find_user(message.text or "")
+    if not user:
+        return await notice(chat, f"{E('warn')} {sc('User not found. They must have started the bot. Try again or /cancel.')}", ttl=8)
+    act = (await state.get_data()).get("act")
+    await sweep(chat)
+    if act == "prem":
+        await state.update_data(uid=user["user_id"])
+        await state.set_state(AdminFlow.prem_days)
+        who = name_link(user["user_id"], user["username"], user["first_name"])
+        remember(await message.answer(f"{E('calendar')} {sc('How many days of premium for')} {who}?"))
+        return
+    await state.clear()
+    await apply_admin_action(chat, act, user)
+
+
+@dp.message(AdminFlow.prem_days)
+async def admin_prem_days(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+    chat = message.chat.id
+    await tidy(message)
+    if message.text == "/cancel":
+        await state.clear()
+        await sweep(chat)
+        return await notice(chat, f"{E('err')} {sc('Cancelled.')}", ttl=5)
+    text = (message.text or "").strip()
+    if not text.isdigit() or int(text) < 1:
+        return await notice(chat, f"{E('warn')} {sc('Send a number of days, like 30.')}", ttl=6)
+    uid = (await state.get_data())["uid"]
+    await state.clear()
+    await sweep(chat)
+    expiry = grant_premium(uid, int(text), extend=True)
+    notified = await notify_premium(uid, expiry)
+    await notice(chat,
+                 f"{E('star')} {sc('Premium until')} {expiry.date()} ➛ {db_user_link(uid)}\n"
+                 + (f"{E('bell')} {sc('User has been notified.')}" if notified
+                    else f"{E('warn')} {sc('Could not notify the user.')}"), ttl=12)
 
 
 # ---- broadcast ----------------------------------------------------------------
@@ -1314,10 +2036,10 @@ async def give_premium(message: Message):
     await tidy(message)
     parts = (message.text or "").split()
     if len(parts) != 3 or not parts[2].isdigit() or int(parts[2]) < 1:
-        return await notice(chat, "Usage: <code>/premium @username days</code>\nExample: <code>/premium @example 30</code>", ttl=10)
-    user = find_registered_user(parts[1])
+        return await notice(chat, "Usage: <code>/premium @username days</code> (" + sc("an ID works too") + ")\nExample: <code>/premium @example 30</code>", ttl=10)
+    user = find_user(parts[1])
     if not user:
-        return await notice(chat, sc("Username not found. The user must start this bot first, and their username must be visible."), ttl=10)
+        return await notice(chat, sc("User not found. They must have started this bot first."), ttl=10)
     expiry = grant_premium(user["user_id"], int(parts[2]), extend=False)
     notified = await notify_premium(user["user_id"], expiry)
     name = esc(f"@{user['username']}" if user["username"] else user["user_id"])
@@ -1338,7 +2060,7 @@ async def remove_premium(message: Message):
     parts = (message.text or "").split()
     if len(parts) != 2:
         return await notice(chat, "Usage: <code>/removepremium @username</code>", ttl=10)
-    user = find_registered_user(parts[1])
+    user = find_user(parts[1])
     if not user:
         return await notice(chat, sc("User not found. They must have started the bot."))
     with db() as con:
@@ -1359,7 +2081,7 @@ async def set_limit(message: Message):
     if len(parts) != 3 or not (parts[2].isdigit() or parts[2].lower() == "default"):
         return await notice(chat, "Usage: <code>/setlimit @username number</code>\n"
                                   "<code>/setlimit @username default</code>", ttl=10)
-    user = find_registered_user(parts[1])
+    user = find_user(parts[1])
     if not user:
         return await notice(chat, sc("User not found. They must have started the bot."))
     value = None if parts[2].lower() == "default" else int(parts[2])
@@ -1372,35 +2094,18 @@ async def set_limit(message: Message):
 
 @dp.message(Command("userinfo"))
 async def user_info(message: Message):
+    """/userinfo @username   or   /userinfo 123456789"""
     if message.from_user.id != OWNER_ID:
         return
     chat = message.chat.id
     await tidy(message)
     parts = (message.text or "").split()
     if len(parts) != 2:
-        return await notice(chat, "Usage: <code>/userinfo @username</code>", ttl=10)
-    user = find_registered_user(parts[1])
+        return await notice(chat, "Usage: <code>/userinfo @username</code> " + sc("or") + " <code>/userinfo 123456789</code>", ttl=10)
+    user = find_user(parts[1])
     if not user:
-        return await notice(chat, sc("User not found."))
-    uid = user["user_id"]
-    expiry = premium_expiry(uid)
-    limit = user_daily_limit(uid)
-    with db() as con:
-        total = con.execute("SELECT COUNT(*) n FROM archives WHERE user_id=?", (uid,)).fetchone()["n"]
-        conns = con.execute("SELECT COUNT(*) n FROM business_connections WHERE owner_id=?", (uid,)).fetchone()["n"]
-    text = "\n".join([
-        bq(f"{E('user')} @{esc(user['username'] or 'no_username')}"),
-        "",
-        row("id", "ID", f"<code>{uid}</code>"),
-        row("ban", "Banned", sc(str(bool(user["banned"])))),
-        row("star", "Premium", f"{expiry:%Y-%m-%d %H:%M} UTC" if expiry else sc("No")),
-        row("bolt", "Daily Limit", "∞" if limit is None else limit),
-        row("camera", "Used Today", daily_count(uid)),
-        row("box", "Total Archived", total),
-        row("link", "Connections", conns),
-        row("time", "Last Seen", user["last_seen"][:16].replace("T", " ")),
-    ])
-    await notice(chat, text, ttl=90)  # long enough to read, then it cleans itself
+        return await notice(chat, sc("User not found. They must have started the bot."))
+    await notice(chat, user_info_text(user), ttl=90)  # long enough to read, then it cleans itself
 
 
 @dp.message(Command("ban"))
@@ -1412,7 +2117,7 @@ async def ban_user(message: Message):
     parts = (message.text or "").split()
     if len(parts) != 2:
         return await notice(chat, "Usage: <code>/ban @username</code>", ttl=10)
-    user = find_registered_user(parts[1])
+    user = find_user(parts[1])
     if not user:
         return await notice(chat, sc("User not found."))
     with db() as con:
@@ -1429,7 +2134,7 @@ async def unban_user(message: Message):
     parts = (message.text or "").split()
     if len(parts) != 2:
         return await notice(chat, "Usage: <code>/unban @username</code>", ttl=10)
-    user = find_registered_user(parts[1])
+    user = find_user(parts[1])
     if not user:
         return await notice(chat, sc("User not found."))
     with db() as con:
@@ -1537,51 +2242,94 @@ async def deliver(media_type: str, chat_id: int, upload: FSInputFile):
 
 # Private channel that keeps a permanent copy of every archived file (survives host crashes).
 # Needs the NUMERIC id (-100...), not the invite link. Add the bot as admin with "post messages".
-MEDIA_CHAT_ID = int(os.getenv("MEDIA_CHAT_ID", "0"))
+# If MEDIA_CHAT_ID is not set it falls back to BACKUP_CHAT_ID, and then to your own chat with the bot.
+MEDIA_CHAT_ID = int(os.getenv("MEDIA_CHAT_ID", "0")) or int(os.getenv("BACKUP_CHAT_ID", "0")) or OWNER_ID
 
 
-async def store_media_copy(sent: Message, owner_id, source_chat_id, media_type):
-    """Copy the file the owner just received into the media channel (no re-upload)."""
-    if not MEDIA_CHAT_ID or sent is None:
+async def store_media_copy(sent: Message, owner_id, chat, media_type):
+    """Copy the file the owner just received into the media channel (no re-upload).
+    The caption names owner and chat by @username, or by profile name as a tap-to-open link."""
+    if not TG_MEDIA_BACKUP or not MEDIA_CHAT_ID or sent is None:
         return
     try:
-        info = f"owner {owner_id} | chat {source_chat_id} | {media_type} | {now():%Y-%m-%d %H:%M} UTC"
+        info = "\n".join([
+            row("user", "Owner", db_user_link(owner_id)),
+            row("chat", "Chat", chat_link(chat)),
+            row("box", media_type, f"{now():%Y-%m-%d %H:%M} UTC"),
+        ])
         copied = await bot.copy_message(
             MEDIA_CHAT_ID, from_chat_id=sent.chat.id, message_id=sent.message_id,
-            caption=info, parse_mode=None)
+            caption=info, parse_mode="HTML")
         if media_type == "video_note":  # video notes cannot carry a caption
-            await bot.send_message(MEDIA_CHAT_ID, info, reply_to_message_id=copied.message_id,
-                                   parse_mode=None)
+            await bot.send_message(MEDIA_CHAT_ID, info, reply_to_message_id=copied.message_id)
     except Exception:
         logging.exception("Could not copy media to the media channel")
 
 
-# ----------------------------------------------------------------------------
-# Repeated message (.Axclerate) and silent chat (.shh) -- Business account tools
+# ============================================================================
+# BUSINESS TOOLS -- they work inside YOUR chats through the connected Business account.
+# Type these in any chat (the bot removes the command message again):
 #
-#   .Axclerate                      -> run with your saved settings
-#   .Axclerate 10 0.5 hi | hello    -> 10 messages, every 0.5 s, cycling the texts
-#   .Axstop                         -> stop the repeater in this chat
-#   .shh                            -> toggle for THIS private chat only: every message
-#                                      the OTHER person sends is deleted instantly.
-#                                      Your own messages are never touched.
-# Needs the Business permission "Manage messages" (delete) for .shh.
-# ----------------------------------------------------------------------------
+#   .Axclerate [preset] [count interval] [msg | msg]   repeat messages (see /start -> Repeated Message)
+#   .Axpause  .Axresume  .Axstop                       control the repeater in this chat
+#   .shh [30m]            toggle: delete what the OTHER person sends (this chat only)
+#   .shh allow w1 | w2    keep messages containing these words     .shh allowmedia photo voice
+#   .shh allow clear      .shh log (save a copy of what is deleted)  .shh off
+#   .afk [2h] [message]   away auto-reply on      .back  off        .afkhere message|off
+#   .later 30m text       send later (or .later 21:30 text)
+#   .save                 reply to a message to save it into the bot
+#   .del 10s text         send text that deletes itself   (or reply to your own message)
+#   .tr hi text           translate your text, or reply with .tr en to read a message
+#   .block w1 | w2        delete messages with these words    .block off
+#   .nolinks   .antispam  toggle link filter / flood filter for this chat
+#   .kw add word | reply  .kw del word  .kw list       keyword auto-replies
+#   .snip add name | text .snip del name  .snip list   snippets, use them with  .name
+#   .panic                stop repeaters, shh, scheduled sends and away mode
+# ============================================================================
 AX_MIN_INTERVAL = 0.1         # seconds (the only limit; Telegram itself may slow you down)
 AX_WARNING = "Spamming can get your Telegram account limited or banned. Use at your own risk."
-_AX_TASKS = {}                # (connection_id, chat_id) -> (owner_id, task)
+AFK_COOLDOWN = 6 * 3600       # one away-reply per chat every 6 hours
+AFK_DEFAULT_TEXT = "I'm away right now. I'll get back to you later."
+KW_COOLDOWN = 60              # seconds, per chat and keyword
+ANTISPAM_LIMIT, ANTISPAM_WINDOW = 5, 10   # more than 5 messages in 10 s from one person
+MAX_KEYWORDS, MAX_SNIPPETS, MAX_PRESETS, MAX_SCHEDULED = 20, 30, 10, 50
+MAX_SCHEDULE_DAYS = 30
 
-# In-memory caches so the shh delete path never touches the database (fastest possible).
-_SHH = set()                  # {(connection_id, chat_id)}
+BIZ_COMMANDS = {
+    ".axclerate", ".axstop", ".axpause", ".axresume", ".shh", ".mute", ".panic", ".afk", ".back",
+    ".afkhere", ".later", ".save", ".del", ".tr", ".block", ".nolinks", ".antispam", ".kw", ".snip",
+}
+_RESERVED = {c[1:] for c in BIZ_COMMANDS}
+
+_AX_JOBS = {}                 # job id -> AxJob
+_AX_BY_CHAT = {}              # (connection_id, chat_id) -> AxJob
+_AX_IDS = itertools.count(1)
+
+# In-memory copies so the delete path never waits for the database.
+_SHH = {}                     # (cid, chat_id) -> {"until","words","media","log","label"}
+_RULES = {}                   # (cid, chat_id) -> {"words","nolinks","antispam"}
 _CONN_OWNER = {}              # connection_id -> owner user id
+_FLOOD = {}                   # (cid, chat_id) -> recent message times
+_AFK_LAST = {}                # (cid, chat_id) -> last away reply
+_KW_LAST = {}                 # (cid, chat_id, keyword) -> last reply
+_KW = {}                      # owner id -> [(keyword, reply)]
+_UPSELL_LAST = {}             # owner id -> last "unlock premium" notice
 
 
-def load_shh():
+def load_runtime_state():
     _SHH.clear()
+    _RULES.clear()
     with db() as con:
-        for r in con.execute("SELECT connection_id, chat_id FROM shh_chats"):
-            _SHH.add((r["connection_id"], r["chat_id"]))
-        for r in con.execute("SELECT connection_id, owner_id FROM business_connections"):
+        for r in con.execute("SELECT * FROM shh_chats"):
+            _SHH[(r["connection_id"], r["chat_id"])] = {
+                "until": r["until"], "words": json.loads(r["allow_words"] or "[]"),
+                "media": set(json.loads(r["allow_media"] or "[]")), "log": bool(r["log"]),
+                "label": r["label"]}
+        for r in con.execute("SELECT * FROM chat_rules"):
+            _RULES[(r["connection_id"], r["chat_id"])] = {
+                "words": json.loads(r["block_words"] or "[]"),
+                "nolinks": bool(r["no_links"]), "antispam": bool(r["antispam"])}
+        for r in con.execute("SELECT connection_id, owner_id FROM business_connections WHERE is_enabled=1"):
             _CONN_OWNER[r["connection_id"]] = r["owner_id"]
 
 
@@ -1594,13 +2342,46 @@ def conn_owner(cid):
     return owner
 
 
+async def _delete_biz(conn_id, ids):
+    for _ in range(2):
+        try:
+            await bot.delete_business_messages(business_connection_id=conn_id, message_ids=ids)
+            return True
+        except TelegramRetryAfter as e:
+            await asyncio.sleep(e.retry_after)
+        except Exception:
+            logging.exception("delete_business_messages failed (needs the 'Manage messages' permission)")
+            return False
+    return False
+
+
+async def _send_as_owner(cid, chat_id, text):
+    return await bot.send_message(chat_id, text, business_connection_id=cid, parse_mode=None)
+
+
+async def _edit_own(message, cid, text):
+    """Turn the owner's own message into `text`; if Telegram refuses, delete it and send anew."""
+    try:
+        await bot.edit_message_text(text, business_connection_id=cid, chat_id=message.chat.id,
+                                    message_id=message.message_id, parse_mode=None)
+        return message.message_id
+    except Exception:
+        logging.exception("edit of own message failed, sending a new one")
+        await _delete_biz(cid, [message.message_id])
+        sent = await _send_as_owner(cid, message.chat.id, text)
+        return sent.message_id
+
+
+# ---------------------------------------------------------------------------------
+# Repeater (.Axclerate)
+# ---------------------------------------------------------------------------------
 def ax_get(uid):
     with db() as con:
         r = con.execute("SELECT * FROM ax_config WHERE user_id=?", (uid,)).fetchone()
     if not r:
-        return {"messages": [], "interval": 5.0, "count": 10}
+        return {"messages": [], "interval": 5.0, "interval_max": None, "count": 10}
     return {"messages": json.loads(r["messages"]), "interval": float(r["interval"]),
-            "count": int(r["count"])}
+            "interval_max": r["interval_max"], "count": int(r["count"])}
 
 
 def ax_save(uid, **changes):
@@ -1608,185 +2389,1022 @@ def ax_save(uid, **changes):
     cfg.update(changes)
     with db() as con:
         con.execute(
-            "INSERT INTO ax_config(user_id, messages, interval, count) VALUES(?,?,?,?) "
-            "ON CONFLICT(user_id) DO UPDATE SET messages=excluded.messages, "
-            "interval=excluded.interval, count=excluded.count",
-            (uid, json.dumps(cfg["messages"]), cfg["interval"], cfg["count"]))
+            "INSERT INTO ax_config(user_id, messages, interval, interval_max, count) VALUES(?,?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET messages=excluded.messages, interval=excluded.interval, "
+            "interval_max=excluded.interval_max, count=excluded.count",
+            (uid, json.dumps(cfg["messages"]), cfg["interval"], cfg["interval_max"], cfg["count"]))
+
+
+def ax_preset_get(uid, name):
+    with db() as con:
+        r = con.execute("SELECT * FROM ax_presets WHERE user_id=? AND name=?", (uid, name.lower())).fetchone()
+    if not r:
+        return None
+    return {"messages": json.loads(r["messages"]), "interval": float(r["interval"]),
+            "interval_max": r["interval_max"], "count": int(r["count"])}
+
+
+def ax_preset_names(uid):
+    with db() as con:
+        return [r["name"] for r in con.execute("SELECT name FROM ax_presets WHERE user_id=? ORDER BY name", (uid,))]
+
+
+def ax_preset_save(uid, name):
+    cfg = ax_get(uid)
+    with db() as con:
+        con.execute(
+            "INSERT INTO ax_presets(user_id, name, messages, interval, interval_max, count) VALUES(?,?,?,?,?,?) "
+            "ON CONFLICT(user_id, name) DO UPDATE SET messages=excluded.messages, interval=excluded.interval, "
+            "interval_max=excluded.interval_max, count=excluded.count",
+            (uid, name, json.dumps(cfg["messages"]), cfg["interval"], cfg["interval_max"], cfg["count"]))
 
 
 def _fmt(n):
     return f"{n:g}"
 
 
-def _to_interval(text):
-    try:
-        return max(AX_MIN_INTERVAL, float(text))
-    except (TypeError, ValueError):
+def fmt_interval(lo, hi):
+    return f"{_fmt(lo)}-{_fmt(hi)}s" if hi else f"{_fmt(lo)}s"
+
+
+def parse_interval(text):
+    """'0.5' -> (0.5, None)   '0.5-2' -> (0.5, 2.0): a random delay between the two."""
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)(?:\s*[-–]\s*(\d+(?:\.\d+)?))?\s*s?", (text or "").strip().lower())
+    if not m:
         return None
+    lo = max(AX_MIN_INTERVAL, float(m.group(1)))
+    hi = float(m.group(2)) if m.group(2) else None
+    if hi is not None:
+        hi = max(hi, lo)
+        if hi == lo:
+            hi = None
+    return lo, hi
 
 
 def _to_count(text):
     return max(1, int(text)) if text and text.isdigit() else None
 
 
-# ---- shh: delete the other person's messages as fast as possible -----------------
-def _shh_hit(m: Message):
-    cid = m.business_connection_id
-    if not cid or not m.from_user or (cid, m.chat.id) not in _SHH:
-        return False
-    owner = conn_owner(cid)
-    return owner is not None and m.from_user.id != owner  # never the owner's own messages
+def _parse_ax(rest, uid):
+    """'.Axclerate [preset] [count interval] [msg1 | msg2]' -> (items, lo, hi, count, preset)."""
+    cfg = ax_get(uid)
+    items, lo, hi, count = cfg["messages"], cfg["interval"], cfg["interval_max"], cfg["count"]
+    rest = rest.strip()
+    first, _, tail = rest.partition(" ")
+    preset = None
+    if first and "|" not in first and not first[0].isdigit():
+        preset = ax_preset_get(uid, first)
+        if preset:
+            items, lo, hi, count = preset["messages"], preset["interval"], preset["interval_max"], preset["count"]
+            rest = tail.strip()
+    parts = rest.split(maxsplit=2)
+    if len(parts) >= 2 and _to_count(parts[0]) and parse_interval(parts[1]):
+        count = _to_count(parts[0])
+        lo, hi = parse_interval(parts[1])
+        rest = parts[2] if len(parts) == 3 else ""
+    if rest.strip():
+        items = [p.strip() for p in rest.split("|") if p.strip()]
+    return items, lo, hi, count, (first.lower() if preset else None)
 
 
-@dp.business_message(_shh_hit)
-async def shh_delete(message: Message):
-    for _ in range(3):
-        try:
-            await bot.delete_business_messages(
-                business_connection_id=message.business_connection_id,
-                message_ids=[message.message_id])
-            return
-        except TelegramRetryAfter as e:
-            await asyncio.sleep(e.retry_after)
-        except Exception:
-            logging.exception("shh delete failed (needs the 'Manage messages' permission)")
-            return
+class AxJob:
+    def __init__(self, cid, chat, uid, items, lo, hi, count):
+        self.id = next(_AX_IDS)
+        self.cid, self.chat_id, self.uid = cid, chat.id, uid
+        self.chat_html, self.chat_label = chat_link(chat), plain_label(chat)
+        self.items, self.lo, self.hi, self.count = items, lo, hi, count
+        self.sent = 0
+        self.state = "running"
+        self.resume = asyncio.Event()
+        self.resume.set()
+        self.task = None
+        self.status_id = None
+        self.last_edit = 0.0
 
 
-async def _delete_biz(conn_id, ids):
-    try:
-        await bot.delete_business_messages(business_connection_id=conn_id, message_ids=ids)
-        return True
-    except Exception:
-        logging.exception("delete_business_messages failed (needs the 'Manage messages' permission)")
-        return False
+_AX_SENDERS = {
+    "photo": ("send_photo", "photo"), "video": ("send_video", "video"), "voice": ("send_voice", "voice"),
+    "audio": ("send_audio", "audio"), "document": ("send_document", "document"),
+    "animation": ("send_animation", "animation"), "sticker": ("send_sticker", "sticker"),
+    "video_note": ("send_video_note", "video_note"),
+}
 
 
-# ---- the repeater itself ------------------------------------------------------------
-async def _ax_send(conn_id, chat_id, text):
+async def _ax_send(cid, chat_id, item):
     for _ in range(5):
         try:
-            return await bot.send_message(chat_id, text, business_connection_id=conn_id,
-                                          parse_mode=None)
+            if isinstance(item, str):
+                return await bot.send_message(chat_id, item, business_connection_id=cid, parse_mode=None)
+            meth, arg = _AX_SENDERS[item["t"]]
+            kw = {arg: item["id"]}
+            if item.get("c") and item["t"] not in ("sticker", "video_note"):
+                kw.update(caption=item["c"], parse_mode=None)
+            return await getattr(bot, meth)(chat_id, business_connection_id=cid, **kw)
         except TelegramRetryAfter as e:
             await asyncio.sleep(e.retry_after + 0.5)
     raise RuntimeError("Telegram flood limit")
 
 
-async def _ax_run(conn_id, chat_id, uid, msgs, interval, count):
-    key = (conn_id, chat_id)
-    sent = 0
+def _bar(done, total, width=10):
+    filled = int(width * done / total) if total else 0
+    return "▰" * filled + "▱" * (width - filled)
+
+
+def ax_status_text(job):
+    return "\n".join([
+        bq(f"{E('bolt')} {sc('Repeater')} ➛ {sc(job.state.capitalize())}"),
+        "",
+        row("chat", "Chat", job.chat_html),
+        row("box", "Sent", f"{job.sent}/{job.count}  {_bar(job.sent, job.count)}"),
+        row("time", "Interval", fmt_interval(job.lo, job.hi)),
+        SEP,
+        f"{E('warn')} <b>{esc(AX_WARNING)}</b>",
+    ])
+
+
+def ax_job_keyboard(job):
+    first = (btn("Resume", "ok", style="success", callback_data=f"axj:resume:{job.id}")
+             if job.state == "paused"
+             else btn("Pause", "time", callback_data=f"axj:pause:{job.id}"))
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [first, btn("Stop", "err", style="danger", callback_data=f"axj:stop:{job.id}")]])
+
+
+async def _ax_progress(job, final=False):
+    if job.status_id is None:
+        return
+    t = time.monotonic()
+    if not final and t - job.last_edit < 2.0:
+        return
+    job.last_edit = t
     try:
-        for i in range(count):
-            if is_banned(uid):
+        await bot.edit_message_text(ax_status_text(job), chat_id=job.uid, message_id=job.status_id,
+                                    reply_markup=None if final else ax_job_keyboard(job))
+    except TelegramBadRequest:
+        pass
+    except Exception:
+        logging.exception("repeater status update failed")
+    if final:
+        task = asyncio.create_task(_delete_later(job.uid, job.status_id, 90))
+        _TASKS.add(task)
+        task.add_done_callback(_TASKS.discard)
+
+
+async def _ax_run(job):
+    key = (job.cid, job.chat_id)
+    try:
+        for i in range(job.count):
+            await job.resume.wait()
+            if is_banned(job.uid):
                 break
-            await _ax_send(conn_id, chat_id, msgs[i % len(msgs)])
-            sent += 1
-            if i < count - 1:
-                await asyncio.sleep(interval)
-        await notice(uid, f"{E('ok')} {sc('Repeater finished')} ➛ {sent}/{count}", ttl=10)
+            await _ax_send(job.cid, job.chat_id, job.items[i % len(job.items)])
+            job.sent += 1
+            await _ax_progress(job)
+            if i < job.count - 1:
+                await asyncio.sleep(random.uniform(job.lo, job.hi) if job.hi else job.lo)
+        job.state = "finished"
     except asyncio.CancelledError:
-        await notice(uid, f"{E('err')} {sc('Repeater stopped')} ➛ {sent}/{count}", ttl=10)
+        job.state = "stopped"
     except Exception:
         logging.exception("Repeater failed")
-        await notice(uid, f"{E('err')} {sc('Repeater failed after')} {sent} {sc('messages.')}", ttl=10)
+        job.state = "failed"
     finally:
-        _AX_TASKS.pop(key, None)
+        _AX_JOBS.pop(job.id, None)
+        if _AX_BY_CHAT.get(key) is job:
+            _AX_BY_CHAT.pop(key, None)
+        await _ax_progress(job, final=True)
+        log_activity(job.uid, "repeater", job.chat_id, job.chat_label,
+                     f"{job.state} {job.sent}/{job.count} @ {fmt_interval(job.lo, job.hi)}")
 
 
-def _parse_ax(rest, cfg):
-    """'.Axclerate [count interval] [msg1 | msg2 ...]' -> (messages, interval, count)."""
-    messages, interval, count = cfg["messages"], cfg["interval"], cfg["count"]
-    parts = rest.split(maxsplit=2)
-    if len(parts) >= 2 and _to_count(parts[0]) and _to_interval(parts[1]) is not None:
-        count, interval = _to_count(parts[0]), _to_interval(parts[1])
-        rest = parts[2] if len(parts) == 3 else ""
-    if rest.strip():
-        messages = [p.strip() for p in rest.split("|") if p.strip()]
-    return messages, interval, count
+@dp.callback_query(F.data.startswith("axj:"))
+async def ax_job_buttons(callback: CallbackQuery):
+    _, action, jid = callback.data.split(":")
+    job = _AX_JOBS.get(int(jid))
+    if not job or job.uid != callback.from_user.id:
+        return await callback.answer(sc("This repeater has already ended."), show_alert=False)
+    if action == "stop":
+        job.task.cancel()
+        return await callback.answer(sc("Stopping..."))
+    if action == "pause":
+        job.resume.clear()
+        job.state = "paused"
+    elif action == "resume":
+        job.state = "running"
+        job.resume.set()
+    job.last_edit = 0.0
+    await _ax_progress(job)
+    await callback.answer()
+
+
+async def cmd_axclerate(message, cid, uid, rest, cmd):
+    chat = message.chat
+    key = (cid, chat.id)
+    items, lo, hi, count, preset = _parse_ax(rest, uid)
+    await _delete_biz(cid, [message.message_id])  # the trigger never stays in the chat
+    if not items:
+        return await notice(uid, f"{E('warn')} {sc('No messages set. Open Repeated Message in the bot menu.')}", ttl=12)
+    if key in _AX_BY_CHAT:
+        return await notice(uid, f"{E('warn')} {sc('Already running there. Send .Axstop first.')}", ttl=8)
+    job = AxJob(cid, chat, uid, items, lo, hi, count)
+    _AX_JOBS[job.id] = job
+    _AX_BY_CHAT[key] = job
+    try:
+        status = await bot.send_message(uid, ax_status_text(job), reply_markup=ax_job_keyboard(job))
+        job.status_id = status.message_id
+    except Exception:
+        logging.exception("could not send the repeater status")
+    job.task = asyncio.create_task(_ax_run(job))
+
+
+async def cmd_axctl(message, cid, uid, rest, cmd):
+    await _delete_biz(cid, [message.message_id])
+    job = _AX_BY_CHAT.get((cid, message.chat.id))
+    if not job:
+        return await notice(uid, f"{E('warn')} {sc('Nothing is running in that chat.')}", ttl=8)
+    if cmd == ".axstop":
+        job.task.cancel()
+        return
+    if cmd == ".axpause":
+        job.resume.clear()
+        job.state = "paused"
+    else:
+        job.state = "running"
+        job.resume.set()
+    job.last_edit = 0.0
+    await _ax_progress(job)
+
+
+# ---------------------------------------------------------------------------------
+# Silent chat (.shh) and per-chat rules (.block / .nolinks / .antispam)
+# ---------------------------------------------------------------------------------
+def shh_save(key):
+    cfg = _SHH[key]
+    with db() as con:
+        con.execute(
+            "INSERT INTO shh_chats(connection_id, chat_id, until, allow_words, allow_media, log, label) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(connection_id, chat_id) DO UPDATE SET until=excluded.until, "
+            "allow_words=excluded.allow_words, allow_media=excluded.allow_media, log=excluded.log, "
+            "label=excluded.label",
+            (key[0], key[1], cfg["until"], json.dumps(cfg["words"]), json.dumps(sorted(cfg["media"])),
+             int(cfg["log"]), cfg["label"]))
+
+
+def shh_drop(key):
+    _SHH.pop(key, None)
+    with db() as con:
+        con.execute("DELETE FROM shh_chats WHERE connection_id=? AND chat_id=?", key)
+
+
+def rules_save(key):
+    rules = _RULES.get(key)
+    with db() as con:
+        if not rules or not (rules["words"] or rules["nolinks"] or rules["antispam"]):
+            _RULES.pop(key, None)
+            con.execute("DELETE FROM chat_rules WHERE connection_id=? AND chat_id=?", key)
+        else:
+            con.execute(
+                "INSERT INTO chat_rules(connection_id, chat_id, block_words, no_links, antispam) VALUES(?,?,?,?,?) "
+                "ON CONFLICT(connection_id, chat_id) DO UPDATE SET block_words=excluded.block_words, "
+                "no_links=excluded.no_links, antispam=excluded.antispam",
+                (key[0], key[1], json.dumps(rules["words"]), int(rules["nolinks"]), int(rules["antispam"])))
+
+
+def _split_words(text):
+    return [w.strip().casefold() for w in re.split(r"[|,]", text or "") if w.strip()]
+
+
+def shh_status_text(key, chat_html):
+    cfg = _SHH.get(key)
+    if not cfg:
+        return f"{E('lock')} {sc('Shh is now')} <b>{sc('off')}</b> ➛ {chat_html}"
+    ends = fmt_local(cfg["until"], conn_owner(key[0])) if cfg["until"] else sc("never")
+    return "\n".join([
+        f"{E('lock')} {sc('Shh is now')} <b>{sc('ON')}</b> ➛ {chat_html}",
+        row("time", "Ends", ends),
+        row("ok", "Allowed Words", esc(", ".join(cfg["words"])) or sc("none")),
+        row("camera", "Allowed Media", esc(", ".join(sorted(cfg["media"]))) or sc("none")),
+        row("pin", "Log", sc("on") if cfg["log"] else sc("off")),
+    ])
+
+
+async def cmd_shh(message, cid, uid, rest, cmd):
+    chat = message.chat
+    key = (cid, chat.id)
+    await _delete_biz(cid, [message.message_id])
+    args = rest.split(maxsplit=1)
+    sub = args[0].lower() if args else ""
+    tail = args[1] if len(args) > 1 else ""
+    link = chat_link(chat)
+    cfg = _SHH.get(key)
+
+    def ensure():
+        nonlocal cfg
+        if cfg is None:
+            cfg = _SHH[key] = {"until": None, "words": [], "media": set(), "log": False,
+                               "label": plain_label(chat)}
+        return cfg
+
+    if sub in ("", "off", "stop"):
+        if cfg or sub == "":
+            if cfg:
+                shh_drop(key)
+                log_activity(uid, "shh off", chat.id, plain_label(chat))
+            else:
+                ensure()
+                shh_save(key)
+                log_activity(uid, "shh on", chat.id, plain_label(chat))
+        return await notice(uid, shh_status_text(key, link), ttl=12)
+    duration = parse_duration(sub)
+    if duration is not None:
+        ensure()["until"] = time.time() + duration
+        shh_save(key)
+        log_activity(uid, "shh on", chat.id, plain_label(chat), f"for {sub}")
+    elif sub == "allow":
+        ensure()
+        cfg["words"] = [] if tail.strip().lower() == "clear" else _split_words(tail)
+        if tail.strip().lower() == "clear":
+            cfg["media"] = set()
+        shh_save(key)
+    elif sub == "allowmedia":
+        ensure()
+        wanted = {w for w in tail.lower().replace(",", " ").split() if w in MEDIA_KINDS}
+        cfg["media"] = wanted
+        shh_save(key)
+    elif sub == "log":
+        if not has_pro(uid):
+            return await notice(uid, f"{E('lock')} {sc('The shh log is a premium feature (your free trial may have ended).')}", ttl=10)
+        ensure()["log"] = not cfg["log"]
+        shh_save(key)
+    else:
+        return await notice(
+            uid, "<code>.shh</code> · <code>.shh 30m</code> · <code>.shh allow word | word</code> · "
+                 "<code>.shh allowmedia photo voice</code> · <code>.shh log</code> · <code>.shh off</code>", ttl=15)
+    await notice(uid, shh_status_text(key, link), ttl=12)
+
+
+def _shh_should_delete(m, cfg):
+    if msg_kind(m) in cfg["media"]:
+        return False
+    if cfg["words"]:
+        text = (m.text or m.caption or "").casefold()
+        if any(w in text for w in cfg["words"]):
+            return False
+    return True
+
+
+async def _shh_log(owner, message):
+    try:
+        if has_pro(owner):
+            header = (f"{E('pin')} <b>{sc('Shh log')}</b> ➛ {name_link(message.from_user.id, message.from_user.username, message.from_user.first_name, message.from_user.last_name)}")
+            await send_payload(owner, msg_payload(message), header)
+    except Exception:
+        logging.exception("shh log failed")
+
+
+_LINK_RE = re.compile(r"(https?://|www\.|t\.me/|telegram\.me/)", re.I)
+
+
+def _has_link(m):
+    for ents in (m.entities, m.caption_entities):
+        for e in ents or []:
+            if e.type in ("url", "text_link"):
+                return True
+    return bool(_LINK_RE.search(m.text or m.caption or ""))
+
+
+def _is_flooding(key):
+    t = time.monotonic()
+    recent = _FLOOD.setdefault(key, deque(maxlen=ANTISPAM_LIMIT + 1))
+    recent.append(t)
+    return len(recent) > ANTISPAM_LIMIT and t - recent[0] <= ANTISPAM_WINDOW
+
+
+def _rule_hit(m, rules, key):
+    text = (m.text or m.caption or "").casefold()
+    if rules["words"] and any(w in text for w in rules["words"]):
+        return "word"
+    if rules["nolinks"] and _has_link(m):
+        return "link"
+    if rules["antispam"] and _is_flooding(key):
+        return "spam"
+    return None
+
+
+async def cmd_block(message, cid, uid, rest, cmd):
+    key = (cid, message.chat.id)
+    await _delete_biz(cid, [message.message_id])
+    rules = _RULES.setdefault(key, {"words": [], "nolinks": False, "antispam": False})
+    arg = rest.strip()
+    if arg.lower() in ("off", "clear"):
+        rules["words"] = []
+    elif arg:
+        rules["words"] = _split_words(arg)
+    rules_save(key)
+    shown = ", ".join(_RULES.get(key, {}).get("words", []))
+    await notice(uid, f"{E('ban')} {sc('Blocked words')} ➛ {esc(shown) or sc('none')} ({chat_link(message.chat)})", ttl=10)
+
+
+async def cmd_rule_toggle(message, cid, uid, rest, cmd):
+    key = (cid, message.chat.id)
+    await _delete_biz(cid, [message.message_id])
+    rules = _RULES.setdefault(key, {"words": [], "nolinks": False, "antispam": False})
+    field = "nolinks" if cmd == ".nolinks" else "antispam"
+    rules[field] = not rules[field]
+    state = rules[field]
+    rules_save(key)
+    name = "Link filter" if field == "nolinks" else "Flood filter"
+    await notice(uid, f"{E('ban')} {sc(name)} ➛ <b>{sc('ON' if state else 'off')}</b> ({chat_link(message.chat)})", ttl=10)
+
+
+# ---------------------------------------------------------------------------------
+# Deleted-message saver (premium / free trial, private chats only)
+# ---------------------------------------------------------------------------------
+def cache_business_message(m, owner):
+    """Keep a copy of what the OTHER person wrote, so it can be sent to you if they delete it."""
+    if m.chat.type != "private" or not deleted_saver_active(owner):
+        return
+    p = msg_payload(m)
+    u = m.from_user
+    with db() as con:
+        con.execute(
+            "INSERT OR REPLACE INTO msg_cache(connection_id, chat_id, message_id, sender_id, sender_name, "
+            "sender_username, kind, text, file_id, sent_at) VALUES(?,?,?,?,?,?,?,?,?,?)",
+            (m.business_connection_id, m.chat.id, m.message_id, u.id, u.full_name, u.username,
+             p["kind"], p["text"], p["file_id"], now().isoformat()))
+
+
+def _is_incoming(m):
+    """A message in a connected chat written by the OTHER person (not the account owner)."""
+    cid = m.business_connection_id
+    if not cid or not m.from_user:
+        return False
+    owner = conn_owner(cid)
+    return owner is not None and m.from_user.id != owner
+
+
+@dp.business_message(_is_incoming)
+async def incoming_guard(message: Message):
+    """Everything the other person writes passes here: shh first (as fast as possible), then
+    block rules, then the deleted-message cache, keyword replies and the away reply."""
+    cid = message.business_connection_id
+    key = (cid, message.chat.id)
+    cfg = _SHH.get(key)
+    if cfg is not None:
+        if cfg["until"] and time.time() > cfg["until"]:
+            shh_drop(key)                       # timer ran out (the housekeeping loop tells you)
+        else:
+            if _shh_should_delete(message, cfg):
+                owner = conn_owner(cid)
+                if cfg["log"]:
+                    _TASKS.add(t := asyncio.create_task(_shh_log(owner, message)))
+                    t.add_done_callback(_TASKS.discard)
+                await _delete_biz(cid, [message.message_id])
+            return                              # allowed messages in a shh chat are left alone
+    owner = conn_owner(cid)
+    rules = _RULES.get(key)
+    if rules:
+        why = _rule_hit(message, rules, key)
+        if why:
+            await _delete_biz(cid, [message.message_id])
+            return
+    if message.chat.type != "private" or message.from_user.is_bot:
+        return
+    owner_row = get_user(owner)
+    if not owner_row or owner_row["banned"]:
+        return
+    try:
+        cache_business_message(message, owner)
+    except Exception:
+        logging.exception("could not cache message")
+    await auto_replies(message, owner)
+
+
+@dp.edited_business_message(_is_incoming)
+async def incoming_edited(message: Message):
+    key = (message.business_connection_id, message.chat.id)
+    if key in _SHH:
+        return
+    owner = conn_owner(message.business_connection_id)
+    try:
+        cache_business_message(message, owner)   # remember the newest version
+    except Exception:
+        logging.exception("could not update cached message")
+
+
+@dp.deleted_business_messages()
+async def on_deleted(event: BusinessMessagesDeleted):
+    cid = event.business_connection_id
+    owner = conn_owner(cid)
+    if owner is None or event.chat.type != "private":
+        return
+    ids = list(event.message_ids)
+    marks = ",".join("?" * len(ids))
+    with db() as con:
+        rows = con.execute(
+            f"SELECT * FROM msg_cache WHERE connection_id=? AND chat_id=? AND message_id IN ({marks}) "
+            f"ORDER BY message_id", (cid, event.chat.id, *ids)).fetchall()
+        con.execute(f"DELETE FROM msg_cache WHERE connection_id=? AND chat_id=? AND message_id IN ({marks})",
+                    (cid, event.chat.id, *ids))
+    if not rows:
+        return
+    with use_lang(owner):
+        if not has_pro(owner):
+            if time.time() - _UPSELL_LAST.get(owner, 0) > 6 * 3600:
+                _UPSELL_LAST[owner] = time.time()
+                await notice(owner, "\n".join([
+                    bq(f"{E('lock')} {sc('A message was deleted in one of your chats')}"),
+                    sc("Your free trial has ended. Premium saves deleted messages for you.")]),
+                    ttl=60, reply_markup=back_keyboard([btn("Buy Premium", "pay", style="primary", callback_data="buy")]))
+            return
+        for r in rows:
+            try:
+                sent_at = datetime.fromisoformat(r["sent_at"]).timestamp()
+                header = "\n".join([
+                    f"{E('trash')} <b>{sc('Deleted message')}</b>",
+                    row("user", "From", name_link(r["sender_id"], r["sender_username"], r["sender_name"])),
+                    row("time", "Sent", fmt_local(sent_at, owner)),
+                ])
+                await send_payload(owner, {"kind": r["kind"], "text": r["text"], "file_id": r["file_id"]}, header)
+            except Exception:
+                logging.exception("could not deliver a deleted message")
+        log_activity(owner, "deleted saved", event.chat.id, plain_label(event.chat), f"{len(rows)} message(s)")
+
+
+# ---------------------------------------------------------------------------------
+# Away auto-reply (.afk), keyword replies, snippets
+# ---------------------------------------------------------------------------------
+def afk_get(uid):
+    with db() as con:
+        r = con.execute("SELECT * FROM afk_config WHERE user_id=?", (uid,)).fetchone()
+    if not r:
+        return {"enabled": 0, "message": None, "until": None, "sched_on": 0, "start_min": None, "end_min": None}
+    return {k: r[k] for k in ("enabled", "message", "until", "sched_on", "start_min", "end_min")}
+
+
+def afk_set(uid, **changes):
+    cfg = afk_get(uid)
+    cfg.update(changes)
+    with db() as con:
+        con.execute(
+            "INSERT INTO afk_config(user_id, enabled, message, until, sched_on, start_min, end_min) "
+            "VALUES(?,?,?,?,?,?,?) ON CONFLICT(user_id) DO UPDATE SET enabled=excluded.enabled, "
+            "message=excluded.message, until=excluded.until, sched_on=excluded.sched_on, "
+            "start_min=excluded.start_min, end_min=excluded.end_min",
+            (uid, cfg["enabled"], cfg["message"], cfg["until"], cfg["sched_on"], cfg["start_min"], cfg["end_min"]))
+
+
+def afk_manual_active(cfg):
+    return bool(cfg["enabled"]) and (not cfg["until"] or cfg["until"] > time.time())
+
+
+def afk_schedule_active(cfg, uid):
+    if not cfg["sched_on"] or cfg["start_min"] is None or cfg["end_min"] is None:
+        return False
+    local = now() + timedelta(minutes=user_tz(uid))
+    cur, start, end = local.hour * 60 + local.minute, cfg["start_min"], cfg["end_min"]
+    return start <= cur < end if start <= end else (cur >= start or cur < end)
+
+
+def afk_active(uid):
+    cfg = afk_get(uid)
+    return afk_manual_active(cfg) or afk_schedule_active(cfg, uid)
+
+
+def afk_text_for(cid, chat_id, uid):
+    with db() as con:
+        r = con.execute("SELECT message FROM afk_chat WHERE connection_id=? AND chat_id=?", (cid, chat_id)).fetchone()
+    return r["message"] if r else (afk_get(uid)["message"] or AFK_DEFAULT_TEXT)
+
+
+def kw_list(uid):
+    if uid not in _KW:
+        with db() as con:
+            _KW[uid] = [(r["keyword"], r["reply"]) for r in con.execute(
+                "SELECT keyword, reply FROM kw_rules WHERE user_id=? ORDER BY length(keyword) DESC", (uid,))]
+    return _KW[uid]
+
+
+def kw_add(uid, keyword, reply):
+    keyword = keyword.strip().casefold()
+    with db() as con:
+        exists = con.execute("SELECT 1 FROM kw_rules WHERE user_id=? AND keyword=?", (uid, keyword)).fetchone()
+        n = con.execute("SELECT COUNT(*) n FROM kw_rules WHERE user_id=?", (uid,)).fetchone()["n"]
+        if not exists and n >= MAX_KEYWORDS:
+            return False
+        con.execute("INSERT INTO kw_rules(user_id, keyword, reply) VALUES(?,?,?) "
+                    "ON CONFLICT(user_id, keyword) DO UPDATE SET reply=excluded.reply",
+                    (uid, keyword, reply.strip()[:4000]))
+    _KW.pop(uid, None)
+    return True
+
+
+def kw_remove(uid, keyword=None, rule_id=None):
+    with db() as con:
+        if rule_id is not None:
+            n = con.execute("DELETE FROM kw_rules WHERE user_id=? AND id=?", (uid, rule_id)).rowcount
+        else:
+            n = con.execute("DELETE FROM kw_rules WHERE user_id=? AND keyword=?", (uid, keyword.strip().casefold())).rowcount
+    _KW.pop(uid, None)
+    return n
+
+
+_NAME_RE = re.compile(r"^[a-z0-9_]{1,12}$")
+
+
+def snippet_get(uid, name):
+    with db() as con:
+        r = con.execute("SELECT text FROM snippets WHERE user_id=? AND name=?", (uid, name)).fetchone()
+    return r["text"] if r else None
+
+
+def snippets_list(uid):
+    with db() as con:
+        return [(r["name"], r["text"]) for r in con.execute(
+            "SELECT name, text FROM snippets WHERE user_id=? ORDER BY name", (uid,))]
+
+
+def snippet_add(uid, name, text):
+    name = name.strip().lstrip(".").lower()
+    if not _NAME_RE.match(name):
+        return "name"
+    if name in _RESERVED:
+        return "reserved"
+    with db() as con:
+        exists = con.execute("SELECT 1 FROM snippets WHERE user_id=? AND name=?", (uid, name)).fetchone()
+        n = con.execute("SELECT COUNT(*) n FROM snippets WHERE user_id=?", (uid,)).fetchone()["n"]
+        if not exists and n >= MAX_SNIPPETS:
+            return "limit"
+        con.execute("INSERT INTO snippets(user_id, name, text) VALUES(?,?,?) "
+                    "ON CONFLICT(user_id, name) DO UPDATE SET text=excluded.text", (uid, name, text.strip()[:4000]))
+    return "ok"
+
+
+def snippet_remove(uid, name):
+    with db() as con:
+        return con.execute("DELETE FROM snippets WHERE user_id=? AND name=?", (uid, name.strip().lstrip(".").lower())).rowcount
+
+
+async def auto_replies(message, owner):
+    """Keyword replies first; otherwise the away reply (once per chat per cooldown)."""
+    cid, chat_id = message.business_connection_id, message.chat.id
+    text = message.text or message.caption or ""
+    if text:
+        low = text.casefold()
+        for keyword, reply in kw_list(owner):
+            if keyword in low:
+                k, t = (cid, chat_id, keyword), time.time()
+                if t - _KW_LAST.get(k, 0) >= KW_COOLDOWN:
+                    _KW_LAST[k] = t
+                    await _send_as_owner(cid, chat_id, reply)
+                    log_activity(owner, "keyword reply", chat_id, plain_label(message.chat), keyword)
+                return
+    if afk_active(owner):
+        k, t = (cid, chat_id), time.time()
+        if t - _AFK_LAST.get(k, 0) >= AFK_COOLDOWN:
+            _AFK_LAST[k] = t
+            await _send_as_owner(cid, chat_id, afk_text_for(cid, chat_id, owner))
+            log_activity(owner, "away reply", chat_id, plain_label(message.chat))
+
+
+async def cmd_afk(message, cid, uid, rest, cmd):
+    await _delete_biz(cid, [message.message_id])
+    if cmd == ".back" or rest.strip().lower() in ("off", "stop"):
+        afk_set(uid, enabled=0, until=None)
+        return await notice(uid, f"{E('ok')} {sc('Away mode is off.')}", ttl=8)
+    first, _, tail = rest.strip().partition(" ")
+    duration = parse_duration(first)
+    text = tail.strip() if duration is not None else rest.strip()
+    changes = {"enabled": 1, "until": (time.time() + duration) if duration else None}
+    if text:
+        changes["message"] = text[:1000]
+    afk_set(uid, **changes)
+    until = f" ({sc('until')} {fmt_local(changes['until'], uid)})" if changes["until"] else ""
+    await notice(uid, f"{E('ok')} {sc('Away mode is on')}{until}\n{esc(afk_text_for(cid, message.chat.id, uid))}", ttl=12)
+
+
+async def cmd_afkhere(message, cid, uid, rest, cmd):
+    await _delete_biz(cid, [message.message_id])
+    with db() as con:
+        if rest.strip().lower() in ("off", "clear", ""):
+            con.execute("DELETE FROM afk_chat WHERE connection_id=? AND chat_id=?", (cid, message.chat.id))
+            return await notice(uid, f"{E('ok')} {sc('This chat uses your default away message.')}", ttl=8)
+        con.execute("INSERT INTO afk_chat(connection_id, chat_id, message) VALUES(?,?,?) "
+                    "ON CONFLICT(connection_id, chat_id) DO UPDATE SET message=excluded.message",
+                    (cid, message.chat.id, rest.strip()[:1000]))
+    await notice(uid, f"{E('ok')} {sc('Away message for')} {chat_link(message.chat)} ➛ {esc(rest.strip())}", ttl=10)
+
+
+async def cmd_kw(message, cid, uid, rest, cmd):
+    await _delete_biz(cid, [message.message_id])
+    args = rest.split(maxsplit=1)
+    sub, tail = (args[0].lower() if args else "list"), (args[1] if len(args) > 1 else "")
+    if sub == "add":
+        keyword, sep, reply = tail.partition("|")
+        if not sep or not keyword.strip() or not reply.strip():
+            return await notice(uid, "<code>.kw add price | It costs ₹99</code>", ttl=10)
+        if not kw_add(uid, keyword, reply):
+            return await notice(uid, f"{E('warn')} {sc('You already have')} {MAX_KEYWORDS} {sc('keyword rules.')}", ttl=8)
+        return await notice(uid, f"{E('ok')} {sc('Keyword saved')} ➛ <code>{esc(keyword.strip())}</code>", ttl=8)
+    if sub in ("del", "remove"):
+        n = kw_remove(uid, keyword=tail)
+        return await notice(uid, f"{E('ok') if n else E('warn')} {sc('Removed') if n else sc('Not found')}", ttl=8)
+    rules = kw_list(uid)
+    body = "\n".join(f"<code>{esc(k)}</code> ➛ {esc(r[:60])}" for k, r in rules) or sc("No keyword rules yet.")
+    await notice(uid, f"{bq(E('pin') + ' ' + sc('Keyword replies'))}\n\n{body}", ttl=30)
+
+
+async def cmd_snip(message, cid, uid, rest, cmd):
+    await _delete_biz(cid, [message.message_id])
+    args = rest.split(maxsplit=1)
+    sub, tail = (args[0].lower() if args else "list"), (args[1] if len(args) > 1 else "")
+    if sub == "add":
+        name, sep, text = tail.partition("|")
+        if not sep or not text.strip():
+            return await notice(uid, "<code>.snip add price | It costs ₹99</code>", ttl=10)
+        res = snippet_add(uid, name, text)
+        msg = {"ok": f"{E('ok')} {sc('Snippet saved. Use it with')} <code>.{esc(name.strip().lstrip('.').lower())}</code>",
+               "name": f"{E('warn')} {sc('Name: 1-12 letters, numbers or _')}",
+               "reserved": f"{E('warn')} {sc('That name is a command, pick another.')}",
+               "limit": f"{E('warn')} {sc('You already have')} {MAX_SNIPPETS} {sc('snippets.')}"}[res]
+        return await notice(uid, msg, ttl=10)
+    if sub in ("del", "remove"):
+        n = snippet_remove(uid, tail)
+        return await notice(uid, f"{E('ok') if n else E('warn')} {sc('Removed') if n else sc('Not found')}", ttl=8)
+    items = snippets_list(uid)
+    body = "\n".join(f"<code>.{esc(n)}</code> ➛ {esc(t[:60])}" for n, t in items) or sc("No snippets yet.")
+    await notice(uid, f"{bq(E('pin') + ' ' + sc('Snippets'))}\n\n{body}", ttl=30)
+
+
+async def cmd_snippet(message, cid, uid, name):
+    text = snippet_get(uid, name)
+    if text:
+        await _edit_own(message, cid, text)
+
+
+# ---------------------------------------------------------------------------------
+# Scheduled messages (.later), self-deleting messages (.del), .save, .tr, .panic
+# ---------------------------------------------------------------------------------
+def sched_add(kind, uid, cid, chat, run_at, text=None, message_id=None):
+    with db() as con:
+        return con.execute(
+            "INSERT INTO scheduled(kind, owner_id, connection_id, chat_id, label, text, message_id, run_at) "
+            "VALUES(?,?,?,?,?,?,?,?)",
+            (kind, uid, cid, chat.id, plain_label(chat), text, message_id, run_at)).lastrowid
+
+
+def sched_pending(uid):
+    with db() as con:
+        return con.execute("SELECT * FROM scheduled WHERE owner_id=? AND kind='send' ORDER BY run_at", (uid,)).fetchall()
+
+
+async def cmd_later(message, cid, uid, rest, cmd):
+    parts = rest.split(maxsplit=1)
+    await _delete_biz(cid, [message.message_id])
+    run_at = parse_when(parts[0], uid) if parts else None
+    if run_at is None or len(parts) < 2:
+        return await notice(uid, "<code>.later 30m text</code> · <code>.later 2h text</code> · <code>.later 21:30 text</code>", ttl=12)
+    if run_at - time.time() > MAX_SCHEDULE_DAYS * 86400:
+        return await notice(uid, f"{E('warn')} {sc('Maximum is')} {MAX_SCHEDULE_DAYS} {sc('days.')}", ttl=8)
+    if len(sched_pending(uid)) >= MAX_SCHEDULED:
+        return await notice(uid, f"{E('warn')} {sc('Too many scheduled messages.')}", ttl=8)
+    sched_add("send", uid, cid, message.chat, run_at, text=parts[1])
+    log_activity(uid, "scheduled", message.chat.id, plain_label(message.chat), fmt_local(run_at, uid))
+    await notice(uid, f"{E('time')} {sc('Scheduled for')} <b>{fmt_local(run_at, uid)}</b> ➛ {chat_link(message.chat)}", ttl=10)
+
+
+async def cmd_del(message, cid, uid, rest, cmd):
+    parts = rest.split(maxsplit=1)
+    delay = parse_duration(parts[0]) if parts else None
+    reply = message.reply_to_message
+    text = parts[1] if len(parts) > 1 else ""
+    if delay is None or not (text or (reply and reply.from_user and reply.from_user.id == uid)):
+        return await notice(uid, "<code>.del 10s your text</code> · " + sc("or reply to your own message with") + " <code>.del 10s</code>", ttl=12)
+    delay = max(1.0, min(delay, 7 * 86400))
+    if text:
+        target_id = await _edit_own(message, cid, text)
+    else:
+        await _delete_biz(cid, [message.message_id])
+        target_id = reply.message_id
+    sched_add("delete", uid, cid, message.chat, time.time() + delay, message_id=target_id)
+
+
+async def cmd_save(message, cid, uid, rest, cmd):
+    await _delete_biz(cid, [message.message_id])
+    src = message.reply_to_message
+    if not src:
+        return await notice(uid, f"{E('warn')} {sc('Reply to a message with .save')}", ttl=8)
+    u = src.from_user
+    who = name_link(u.id, u.username, u.first_name, u.last_name) if u else chat_link(message.chat)
+    header = "\n".join([f"{E('save')} <b>{sc('Saved message')}</b>", row("user", "From", who),
+                        row("chat", "Chat", chat_link(message.chat))])
+    try:
+        await send_payload(uid, msg_payload(src), header)
+        log_activity(uid, "saved message", message.chat.id, plain_label(message.chat))
+    except Exception:
+        logging.exception(".save failed")
+        await notice(uid, f"{E('err')} {sc('Could not save that message.')}", ttl=8)
+
+
+async def translate(text, target):
+    try:
+        timeout = aiohttp.ClientTimeout(total=10)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get("https://translate.googleapis.com/translate_a/single",
+                                   params={"client": "gtx", "sl": "auto", "tl": target, "dt": "t",
+                                           "q": text[:3000]}) as resp:
+                data = await resp.json(content_type=None)
+        return "".join(seg[0] for seg in data[0] if seg and seg[0]) or None
+    except Exception:
+        logging.exception("translation failed")
+        return None
+
+
+async def cmd_tr(message, cid, uid, rest, cmd):
+    parts = rest.split(maxsplit=1)
+    lang = parts[0].lower() if parts else ""
+    reply = message.reply_to_message
+    if not re.fullmatch(r"[a-z]{2,3}(-[a-z]{2,4})?", lang):
+        return await notice(uid, "<code>.tr hi how are you</code> · " + sc("or reply to a message with") + " <code>.tr en</code>", ttl=12)
+    if len(parts) == 2:
+        result = await translate(parts[1], lang)
+        if not result:
+            return await notice(uid, f"{E('err')} {sc('Translation failed, try again.')}", ttl=8)
+        await _edit_own(message, cid, result)
+        return log_activity(uid, "translated", message.chat.id, plain_label(message.chat), lang)
+    src = (reply.text or reply.caption) if reply else None
+    if not src:
+        return await notice(uid, f"{E('warn')} {sc('Write text after the language, or reply to a message.')}", ttl=8)
+    await _delete_biz(cid, [message.message_id])
+    result = await translate(src, lang)
+    if not result:
+        return await notice(uid, f"{E('err')} {sc('Translation failed, try again.')}", ttl=8)
+    await bot.send_message(uid, f"{E('globe')} <b>{sc('Translation')}</b> ➛ {esc(lang)}\n"
+                                f"{row('user', 'Chat', chat_link(message.chat))}\n\n{esc(result)}")
+
+
+async def do_panic(uid):
+    jobs = [j for j in _AX_JOBS.values() if j.uid == uid]
+    for job in jobs:
+        job.task.cancel()
+    mine = {c for c, o in _CONN_OWNER.items() if o == uid}
+    keys = [k for k in list(_SHH) if k[0] in mine]
+    for key in keys:
+        shh_drop(key)
+    with db() as con:
+        scheduled = con.execute("DELETE FROM scheduled WHERE owner_id=? AND kind='send'", (uid,)).rowcount
+    afk_set(uid, enabled=0, until=None, sched_on=0)
+    log_activity(uid, "panic", detail=f"{len(jobs)} repeaters, {len(keys)} shh, {scheduled} scheduled")
+    return len(jobs), len(keys), scheduled
+
+
+def panic_text(counts):
+    jobs, shh, scheduled = counts
+    return "\n".join([
+        bq(f"{E('ban')} {sc('Panic done')}"), "",
+        row("bolt", "Repeaters Stopped", jobs),
+        row("lock", "Shh Chats Off", shh),
+        row("time", "Scheduled Cleared", scheduled),
+        row("chat", "Away Mode", sc("off")),
+    ])
+
+
+async def cmd_panic(message, cid, uid, rest, cmd):
+    await _delete_biz(cid, [message.message_id])
+    await notice(uid, panic_text(await do_panic(uid)), ttl=15)
+
+
+@dp.message(Command("panic"))
+async def panic_command(message: Message):
+    if not message.from_user or is_banned(message.from_user.id):
+        return
+    await tidy(message)
+    await notice(message.chat.id, panic_text(await do_panic(message.from_user.id)), ttl=15)
+
+
+# ---------------------------------------------------------------------------------
+# Command dispatcher for the account owner's own messages
+# ---------------------------------------------------------------------------------
+_SNIP_RE = re.compile(r"^\.([A-Za-z0-9_]{1,12})$")
+
+_BIZ_HANDLERS = {
+    ".axclerate": cmd_axclerate, ".axstop": cmd_axctl, ".axpause": cmd_axctl, ".axresume": cmd_axctl,
+    ".shh": cmd_shh, ".mute": cmd_shh, ".panic": cmd_panic, ".afk": cmd_afk, ".back": cmd_afk,
+    ".afkhere": cmd_afkhere, ".later": cmd_later, ".save": cmd_save, ".del": cmd_del, ".tr": cmd_tr,
+    ".block": cmd_block, ".nolinks": cmd_rule_toggle, ".antispam": cmd_rule_toggle,
+    ".kw": cmd_kw, ".snip": cmd_snip,
+}
 
 
 def _biz_special(m: Message):
-    if not m.business_connection_id or not m.from_user:
+    if not (m.business_connection_id and m.from_user and m.text):
         return False
-    words = (m.text or "").strip().lower().split()
-    return bool(words) and words[0] in (".axclerate", ".axstop", ".shh")
+    owner = conn_owner(m.business_connection_id)
+    if owner is None or m.from_user.id != owner:
+        return False
+    text = m.text.strip()
+    if text.split(maxsplit=1)[0].lower() in BIZ_COMMANDS:
+        return True
+    hit = _SNIP_RE.match(text)
+    return bool(hit and snippet_get(owner, hit.group(1).lower()))
 
 
 @dp.business_message(_biz_special)
 async def business_special(message: Message):
     cid = message.business_connection_id
     owner_id = conn_owner(cid)
-    if owner_id is None or message.from_user.id != owner_id:
-        return  # only the account owner can use these
     owner = get_user(owner_id)
     if not owner or owner["banned"]:
         return
     words = message.text.strip().split(maxsplit=1)
     cmd = words[0].lower()
     rest = words[1] if len(words) > 1 else ""
-    chat_id = message.chat.id
-    key = (cid, chat_id)
-
-    if cmd == ".shh":
-        with db() as con:
-            if key in _SHH:
-                con.execute("DELETE FROM shh_chats WHERE connection_id=? AND chat_id=?", key)
-                _SHH.discard(key)
-                on = False
-            else:
-                con.execute("INSERT OR IGNORE INTO shh_chats(connection_id, chat_id) VALUES(?,?)", key)
-                _SHH.add(key)
-                on = True
-        await _delete_biz(cid, [message.message_id])
-        await notice(owner_id, f"{E('lock')} {sc('Shh is now')} <b>{sc('ON' if on else 'off')}</b> "
-                               f"{sc('for chat')} <code>{chat_id}</code>", ttl=10)
-        return
-
-    if cmd == ".axstop":
-        stopped = False
-        if key in _AX_TASKS:
-            _AX_TASKS[key][1].cancel()
-            stopped = True
-        await _delete_biz(cid, [message.message_id])
-        if not stopped:
-            await notice(owner_id, f"{E('warn')} {sc('Nothing is running in that chat.')}", ttl=8)
-        return
-
-    # .axclerate
-    messages, interval, count = _parse_ax(rest, ax_get(owner_id))
-    await _delete_biz(cid, [message.message_id])  # the trigger never stays in the chat
-    if not messages:
-        return await notice(owner_id, f"{E('warn')} {sc('No messages set. Open Repeated Message in the bot menu.')}", ttl=12)
-    if key in _AX_TASKS:
-        return await notice(owner_id, f"{E('warn')} {sc('Already running there. Send .Axstop first.')}", ttl=8)
-    task = asyncio.create_task(_ax_run(cid, chat_id, owner_id, messages, interval, count))
-    _AX_TASKS[key] = (owner_id, task)
-    await notice(owner_id,
-                 f"{E('bolt')} {sc('Repeater started')} ➛ {count} × / {_fmt(interval)}s / "
-                 f"{len(messages)} {sc('message(s)')}\n"
-                 f"{E('warn')} <b>{esc(AX_WARNING)}</b>\n"
-                 f"{sc('Stop it with')} <code>.Axstop</code>", ttl=15)
+    handler = _BIZ_HANDLERS.get(cmd)
+    if handler:
+        return await handler(message, cid, owner_id, rest, cmd)
+    await cmd_snippet(message, cid, owner_id, cmd[1:])
 
 
-# ---- Repeated-message menu (inline buttons in the bot) ---------------------------------
-class AxFlow(StatesGroup):
-    messages = State()
-    interval = State()
-    count = State()
+# ---------------------------------------------------------------------------------
+# Bot menus for the tools above (buttons + step-by-step prompts)
+# ---------------------------------------------------------------------------------
+class UFlow(StatesGroup):
+    ax_messages = State()
+    ax_interval = State()
+    ax_count = State()
+    ax_media = State()
+    ax_preset = State()
+    afk_message = State()
+    afk_sched = State()
+    afk_tz = State()
+    kw_add = State()
+    sn_add = State()
+
+
+async def open_screen(callback: CallbackQuery, state: FSMContext, text, kb):
+    await state.clear()
+    await sweep(callback.message.chat.id, keep=callback.message.message_id)
+    await safe_edit(callback, text, kb)
+    await callback.answer()
+
+
+async def ask(callback: CallbackQuery, state: FSMContext, new_state, text):
+    if is_banned(callback.from_user.id):
+        return await callback.answer("Access disabled.", show_alert=True)
+    await state.set_state(new_state)
+    remember(await callback.message.answer(f"{text}\n{sc('Send /cancel to stop.')}"))
+    await callback.answer()
+
+
+async def flow_end(message: Message, state: FSMContext, text, kb):
+    await state.clear()
+    chat = message.chat.id
+    await tidy(message)
+    await sweep(chat)
+    await show_panel(chat, text, kb)
+
+
+async def flow_cancel(message: Message, state: FSMContext):
+    await state.clear()
+    await tidy(message)
+    await sweep(message.chat.id)
+    await notice(message.chat.id, f"{E('err')} {sc('Cancelled.')}", ttl=5)
+
+
+async def flow_retry(message: Message, text):
+    await tidy(message)
+    await notice(message.chat.id, f"{E('warn')} {text}", ttl=6)
+
+
+def back_to(callback_data, label="Back"):
+    return [btn(label, "home", callback_data=callback_data)]
+
+
+# ---- Repeated message -------------------------------------------------------------
+def ax_item_text(item):
+    if isinstance(item, str):
+        return esc(item[:50])
+    cap = (item.get("c") or "")[:30]
+    return f"[{item['t']}]" + (f" {esc(cap)}" if cap else "")
 
 
 def ax_text(uid):
     cfg = ax_get(uid)
-    lines = [bq(f"{E('bolt')} {sc('Repeated message')}"), "",
-             row("pin", "Messages", len(cfg["messages"]))]
-    lines += [f"   {i}. {esc(m)}" for i, m in enumerate(cfg["messages"], 1)]
+    items = cfg["messages"]
+    lines = [bq(f"{E('bolt')} {sc('Repeated message')}"), "", row("pin", "Messages", len(items))]
+    lines += [f"   {i}. {ax_item_text(m)}" for i, m in enumerate(items[:12], 1)]
+    if len(items) > 12:
+        lines.append(f"   … +{len(items) - 12}")
+    lines += [row("time", "Interval", fmt_interval(cfg["interval"], cfg["interval_max"])),
+              row("box", "Count", cfg["count"])]
+    presets = ax_preset_names(uid)
+    if presets:
+        lines.append(row("save", "Presets", esc(", ".join(presets))))
     lines += [
-        row("time", "Interval", f"{_fmt(cfg['interval'])}s"),
-        row("box", "Count", cfg["count"]),
         SEP,
-        f"{E('bolt')} {sc('In any chat send')} <code>.Axclerate</code> {sc('to start,')} <code>.Axstop</code> {sc('to stop')}",
-        f"{E('bolt')} <code>.Axclerate 10 0.5 hi | hello</code>",
+        f"{E('bolt')} {sc('In any chat send:')}",
+        "<code>.Axclerate</code>  <code>.Axpause</code>  <code>.Axresume</code>  <code>.Axstop</code>",
+        "<code>.Axclerate 10 0.5-2 hi | hello</code>",
         f"{E('warn')} <b>{esc(AX_WARNING)}</b>",
     ]
     return "\n".join(lines)
@@ -1794,9 +3412,9 @@ def ax_text(uid):
 
 def ax_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [btn("Set Messages", "pin", callback_data="axmsgs"),
-         btn("Interval", "time", callback_data="axint")],
-        [btn("Count", "box", callback_data="axcnt")],
+        [btn("Set Messages", "pin", callback_data="axmsgs"), btn("Add Media", "camera", callback_data="axmedia")],
+        [btn("Interval", "time", callback_data="axint"), btn("Count", "box", callback_data="axcnt")],
+        [btn("Presets", "save", callback_data="axpre"), btn("Clear Items", "trash", callback_data="axclr")],
         [btn("Main Menu", "home", callback_data="home")],
     ])
 
@@ -1806,89 +3424,681 @@ async def ax_menu(callback: CallbackQuery, state: FSMContext):
     upsert_user(callback.from_user)
     if is_banned(callback.from_user.id):
         return await callback.answer("Access disabled.", show_alert=True)
-    await state.clear()
-    await sweep(callback.message.chat.id, keep=callback.message.message_id)
-    await safe_edit(callback, ax_text(callback.from_user.id), ax_keyboard())
-    await callback.answer()
-
-
-async def _ax_prompt(callback, state, new_state, text):
-    if is_banned(callback.from_user.id):
-        return await callback.answer("Access disabled.", show_alert=True)
-    await state.set_state(new_state)
-    remember(await callback.message.answer(f"{text}\n{sc('Send /cancel to stop.')}"))
-    await callback.answer()
+    await open_screen(callback, state, ax_text(callback.from_user.id), ax_keyboard())
 
 
 @dp.callback_query(F.data == "axmsgs")
 async def ax_ask_msgs(callback: CallbackQuery, state: FSMContext):
-    await _ax_prompt(callback, state, AxFlow.messages,
-                     f"{E('pin')} {sc('Send your messages separated by')} <code>|</code>\n"
-                     f"{sc('Example:')} <code>hi | hello | hey</code>")
+    await ask(callback, state, UFlow.ax_messages,
+              f"{E('pin')} {sc('Send your messages separated by')} <code>|</code>\n"
+              f"{sc('Example:')} <code>hi | hello | hey</code>\n{sc('This replaces the whole list.')}")
+
+
+@dp.callback_query(F.data == "axmedia")
+async def ax_ask_media(callback: CallbackQuery, state: FSMContext):
+    await ask(callback, state, UFlow.ax_media,
+              f"{E('camera')} {sc('Send a photo, sticker, voice note, video or file to add it to the cycle.')}")
 
 
 @dp.callback_query(F.data == "axint")
 async def ax_ask_interval(callback: CallbackQuery, state: FSMContext):
-    await _ax_prompt(callback, state, AxFlow.interval,
-                     f"{E('time')} {sc('Send the interval in seconds')} ({sc('minimum')} {_fmt(AX_MIN_INTERVAL)}, "
-                     f"{sc('example')} <code>0.5</code>)")
+    await ask(callback, state, UFlow.ax_interval,
+              f"{E('time')} {sc('Send the interval in seconds, minimum')} {_fmt(AX_MIN_INTERVAL)}\n"
+              f"{sc('Example:')} <code>0.5</code> {sc('or a random range')} <code>0.5-2</code>")
 
 
 @dp.callback_query(F.data == "axcnt")
 async def ax_ask_count(callback: CallbackQuery, state: FSMContext):
-    await _ax_prompt(callback, state, AxFlow.count,
-                     f"{E('box')} {sc('Send how many messages to send, example')} <code>20</code>")
+    await ask(callback, state, UFlow.ax_count,
+              f"{E('box')} {sc('Send how many messages to send, example')} <code>20</code>")
 
 
-async def _ax_done(message: Message, state: FSMContext):
-    await state.clear()
-    chat = message.chat.id
-    await tidy(message)
-    await sweep(chat)
-    await show_panel(chat, ax_text(message.from_user.id), ax_keyboard())
+@dp.callback_query(F.data == "axclr")
+async def ax_clear(callback: CallbackQuery, state: FSMContext):
+    ax_save(callback.from_user.id, messages=[])
+    await open_screen(callback, state, ax_text(callback.from_user.id), ax_keyboard())
 
 
-async def _ax_cancelled(message: Message, state: FSMContext):
-    await state.clear()
-    await tidy(message)
-    await sweep(message.chat.id)
-    await notice(message.chat.id, f"{E('err')} {sc('Cancelled.')}", ttl=5)
-
-
-@dp.message(AxFlow.messages)
+@dp.message(UFlow.ax_messages)
 async def ax_got_msgs(message: Message, state: FSMContext):
     if message.text == "/cancel":
-        return await _ax_cancelled(message, state)
+        return await flow_cancel(message, state)
     msgs = [p.strip()[:4000] for p in (message.text or "").split("|") if p.strip()]
     if not msgs:
-        await tidy(message)
-        return await notice(message.chat.id, f"{E('warn')} {sc('Please send some text.')}", ttl=6)
+        return await flow_retry(message, sc("Please send some text."))
     ax_save(message.from_user.id, messages=msgs)
-    await _ax_done(message, state)
+    await flow_end(message, state, ax_text(message.from_user.id), ax_keyboard())
 
 
-@dp.message(AxFlow.interval)
+@dp.message(UFlow.ax_media)
+async def ax_got_media(message: Message, state: FSMContext):
+    if message.text == "/cancel":
+        return await flow_cancel(message, state)
+    p = msg_payload(message)
+    if p["kind"] == "other":
+        return await flow_retry(message, sc("That type is not supported. Send text, a photo, sticker, voice, video or file."))
+    cfg = ax_get(message.from_user.id)
+    if p["kind"] == "text":
+        cfg["messages"].append(p["text"][:4000])
+    else:
+        cfg["messages"].append({"t": p["kind"], "id": p["file_id"], "c": (p["text"] or "")[:900]})
+    ax_save(message.from_user.id, messages=cfg["messages"])
+    await flow_end(message, state, ax_text(message.from_user.id), ax_keyboard())
+
+
+@dp.message(UFlow.ax_interval)
 async def ax_got_interval(message: Message, state: FSMContext):
     if message.text == "/cancel":
-        return await _ax_cancelled(message, state)
-    value = _to_interval((message.text or "").strip())
-    if value is None:
-        await tidy(message)
-        return await notice(message.chat.id, f"{E('warn')} {sc('Send a number, like 0.5')}", ttl=6)
-    ax_save(message.from_user.id, interval=value)
-    await _ax_done(message, state)
+        return await flow_cancel(message, state)
+    parsed = parse_interval(message.text or "")
+    if not parsed:
+        return await flow_retry(message, sc("Send a number like 0.5 or a range like 0.5-2"))
+    ax_save(message.from_user.id, interval=parsed[0], interval_max=parsed[1])
+    await flow_end(message, state, ax_text(message.from_user.id), ax_keyboard())
 
 
-@dp.message(AxFlow.count)
+@dp.message(UFlow.ax_count)
 async def ax_got_count(message: Message, state: FSMContext):
     if message.text == "/cancel":
-        return await _ax_cancelled(message, state)
+        return await flow_cancel(message, state)
     value = _to_count((message.text or "").strip())
     if value is None:
-        await tidy(message)
-        return await notice(message.chat.id, f"{E('warn')} {sc('Send a whole number, like 20')}", ttl=6)
+        return await flow_retry(message, sc("Send a whole number, like 20"))
     ax_save(message.from_user.id, count=value)
-    await _ax_done(message, state)
+    await flow_end(message, state, ax_text(message.from_user.id), ax_keyboard())
+
+
+# presets
+def axpre_text(uid):
+    lines = [bq(f"{E('save')} {sc('Repeater presets')}"), ""]
+    names = ax_preset_names(uid)
+    for name in names:
+        p = ax_preset_get(uid, name)
+        lines.append(f"<code>.Axclerate {esc(name)}</code> ➛ {len(p['messages'])} {sc('items')}, "
+                     f"{p['count']} × {fmt_interval(p['interval'], p['interval_max'])}")
+    if not names:
+        lines.append(sc("No presets yet. Set up your messages, then save them here."))
+    lines += [SEP, sc("A preset stores your current messages, interval and count.")]
+    return "\n".join(lines)
+
+
+def axpre_keyboard(uid):
+    rows = []
+    for name in ax_preset_names(uid):
+        rows.append([btn(f"Load {name}", "ok", callback_data=f"axpl:{name}"),
+                     btn(f"Delete {name}", "trash", style="danger", callback_data=f"axpd:{name}")])
+    rows.append([btn("Save Current As Preset", "save", style="primary", callback_data="axps")])
+    rows.append(back_to("axmenu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data == "axpre")
+async def ax_presets(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    await open_screen(callback, state, axpre_text(uid), axpre_keyboard(uid))
+
+
+@dp.callback_query(F.data == "axps")
+async def ax_preset_ask(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    if not ax_get(uid)["messages"]:
+        return await callback.answer(sc("Add some messages first."), show_alert=True)
+    if len(ax_preset_names(uid)) >= MAX_PRESETS:
+        return await callback.answer(sc("Too many presets. Delete one first."), show_alert=True)
+    await ask(callback, state, UFlow.ax_preset,
+              f"{E('save')} {sc('Send a name for this preset (letters, numbers, _ up to 16).')}")
+
+
+@dp.message(UFlow.ax_preset)
+async def ax_preset_name(message: Message, state: FSMContext):
+    if message.text == "/cancel":
+        return await flow_cancel(message, state)
+    name = (message.text or "").strip().lower()
+    if not re.fullmatch(r"[a-z][a-z0-9_]{0,15}", name) or name.isdigit():
+        return await flow_retry(message, sc("Use letters, numbers or _ (start with a letter, max 16)."))
+    uid = message.from_user.id
+    ax_preset_save(uid, name)
+    await flow_end(message, state, axpre_text(uid), axpre_keyboard(uid))
+
+
+@dp.callback_query(F.data.startswith("axpl:"))
+async def ax_preset_load(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    preset = ax_preset_get(uid, callback.data.split(":", 1)[1])
+    if preset:
+        ax_save(uid, **preset)
+    await open_screen(callback, state, ax_text(uid), ax_keyboard())
+
+
+@dp.callback_query(F.data.startswith("axpd:"))
+async def ax_preset_delete(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    with db() as con:
+        con.execute("DELETE FROM ax_presets WHERE user_id=? AND name=?", (uid, callback.data.split(":", 1)[1]))
+    await open_screen(callback, state, axpre_text(uid), axpre_keyboard(uid))
+
+
+# ---- Deleted messages --------------------------------------------------------------
+def del_text(uid):
+    row_ = get_user(uid)
+    on = bool(row_ and row_["save_deleted"])
+    lines = [
+        bq(f"{E('trash')} {sc('Deleted message saver')}"), "",
+        row("star", "Access", pro_status_text(uid)),
+        row("ok" if on else "err", "Saving", sc("On") if on else sc("Off")),
+        row("time", "Kept For", f"{DELETED_CACHE_HOURS} {sc('hours')}"),
+        SEP,
+        sc("When someone deletes a message in your private chats, the bot sends it to you here."),
+        sc("Text, photos, videos, voice notes, stickers and files are saved."),
+        sc("Needs this bot connected in Settings → Business → Chatbots."),
+    ]
+    if not has_pro(uid):
+        lines += [SEP, f"{E('lock')} {sc('Your free trial has ended. Premium unlocks this again.')}"]
+    return "\n".join(lines)
+
+
+def del_keyboard(uid):
+    rows = []
+    if has_pro(uid):
+        on = bool((get_user(uid) or {"save_deleted": 1})["save_deleted"])
+        rows.append([btn("Turn Off" if on else "Turn On", "ok" if not on else "err", callback_data="deltoggle")])
+    if not is_premium(uid):
+        rows.append([btn("Buy Premium", "pay", style="primary", callback_data="buy")])
+    rows.append([btn("Main Menu", "home", callback_data="home")])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data == "delmenu")
+async def del_menu(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    await open_screen(callback, state, del_text(uid), del_keyboard(uid))
+
+
+@dp.callback_query(F.data == "deltoggle")
+async def del_toggle(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    with db() as con:
+        con.execute("UPDATE users SET save_deleted=1-save_deleted WHERE user_id=?", (uid,))
+    await open_screen(callback, state, del_text(uid), del_keyboard(uid))
+
+
+# ---- Auto reply (away mode) ---------------------------------------------------------
+def afk_text_screen(uid):
+    cfg = afk_get(uid)
+    manual = afk_manual_active(cfg)
+    sched = f"{cfg['start_min'] // 60:02d}:{cfg['start_min'] % 60:02d} - {cfg['end_min'] // 60:02d}:{cfg['end_min'] % 60:02d}" \
+        if cfg["start_min"] is not None and cfg["end_min"] is not None else sc("not set")
+    lines = [
+        bq(f"{E('chat')} {sc('Auto reply (away mode)')}"), "",
+        row("ok" if afk_active(uid) else "err", "Status", sc("Replying") if afk_active(uid) else sc("Off")),
+        row("bolt", "Manual", sc("on") if manual else sc("off")),
+        row("calendar", "Schedule", f"{sched} ({sc('on') if cfg['sched_on'] else sc('off')})"),
+        row("globe", "Timezone", fmt_tz(user_tz(uid))),
+        row("pin", "Message", esc((cfg["message"] or AFK_DEFAULT_TEXT)[:120])),
+        SEP,
+        sc("People who message you get this reply once every 6 hours."),
+        sc("In a chat:"),
+        "<code>.afk 2h in a meeting</code>  <code>.back</code>",
+        "<code>.afkhere message</code> " + sc("(only for that chat)"),
+    ]
+    return "\n".join(lines)
+
+
+def afk_keyboard(uid):
+    manual = afk_manual_active(afk_get(uid))
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [btn("Turn Off Now" if manual else "Turn On Now", "err" if manual else "ok", callback_data="afktoggle")],
+        [btn("Set Message", "pin", callback_data="afkmsg"), btn("Schedule", "calendar", callback_data="afksched")],
+        [btn("Timezone", "globe", callback_data="afktz")],
+        [btn("Main Menu", "home", callback_data="home")],
+    ])
+
+
+@dp.callback_query(F.data == "afkmenu")
+async def afk_menu(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    await open_screen(callback, state, afk_text_screen(uid), afk_keyboard(uid))
+
+
+@dp.callback_query(F.data == "afktoggle")
+async def afk_toggle(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    if afk_manual_active(afk_get(uid)):
+        afk_set(uid, enabled=0, until=None)
+    else:
+        afk_set(uid, enabled=1, until=None)
+    await open_screen(callback, state, afk_text_screen(uid), afk_keyboard(uid))
+
+
+@dp.callback_query(F.data == "afkmsg")
+async def afk_ask_msg(callback: CallbackQuery, state: FSMContext):
+    await ask(callback, state, UFlow.afk_message, f"{E('pin')} {sc('Send your away message.')}")
+
+
+@dp.callback_query(F.data == "afksched")
+async def afk_ask_sched(callback: CallbackQuery, state: FSMContext):
+    await ask(callback, state, UFlow.afk_sched,
+              f"{E('calendar')} {sc('Send the daily away hours in your timezone.')}\n"
+              f"{sc('Example:')} <code>22:00-07:00</code>  {sc('or')} <code>off</code>")
+
+
+@dp.callback_query(F.data == "afktz")
+async def afk_ask_tz(callback: CallbackQuery, state: FSMContext):
+    await ask(callback, state, UFlow.afk_tz,
+              f"{E('globe')} {sc('Send your timezone offset from UTC.')}\n"
+              f"{sc('Example:')} <code>+5:30</code>  <code>-4</code>  <code>0</code>")
+
+
+@dp.message(UFlow.afk_message)
+async def afk_got_msg(message: Message, state: FSMContext):
+    if message.text == "/cancel":
+        return await flow_cancel(message, state)
+    if not message.text:
+        return await flow_retry(message, sc("Please send some text."))
+    uid = message.from_user.id
+    afk_set(uid, message=message.text[:1000])
+    await flow_end(message, state, afk_text_screen(uid), afk_keyboard(uid))
+
+
+@dp.message(UFlow.afk_sched)
+async def afk_got_sched(message: Message, state: FSMContext):
+    if message.text == "/cancel":
+        return await flow_cancel(message, state)
+    uid = message.from_user.id
+    text = (message.text or "").strip().lower()
+    if text in ("off", "clear"):
+        afk_set(uid, sched_on=0, start_min=None, end_min=None)
+    else:
+        a, _, b = text.partition("-")
+        start, end = parse_clock(a), parse_clock(b)
+        if start is None or end is None:
+            return await flow_retry(message, sc("Use the format 22:00-07:00"))
+        afk_set(uid, sched_on=1, start_min=start, end_min=end)
+    await flow_end(message, state, afk_text_screen(uid), afk_keyboard(uid))
+
+
+@dp.message(UFlow.afk_tz)
+async def afk_got_tz(message: Message, state: FSMContext):
+    if message.text == "/cancel":
+        return await flow_cancel(message, state)
+    minutes = parse_tz(message.text or "")
+    if minutes is None:
+        return await flow_retry(message, sc("Use an offset like +5:30 or -4"))
+    uid = message.from_user.id
+    with db() as con:
+        con.execute("UPDATE users SET tz_offset=? WHERE user_id=?", (minutes, uid))
+    await flow_end(message, state, afk_text_screen(uid), afk_keyboard(uid))
+
+
+# ---- Tools hub ------------------------------------------------------------------------
+def tools_text():
+    return "\n".join([
+        bq(f"{E('tools')} {sc('Tools')}"), "",
+        sc("Everything here works inside your own chats through your Business account."),
+    ])
+
+
+def tools_keyboard():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [btn("Keyword Replies", "bolt", callback_data="kwmenu"), btn("Snippets", "pin", callback_data="snmenu")],
+        [btn("Scheduled", "time", callback_data="schmenu"), btn("Activity", "list", callback_data="actmenu")],
+        [btn("Commands", "play", callback_data="helpmenu"), btn("Panic", "ban", style="danger", callback_data="panicbtn")],
+        [btn("Main Menu", "home", callback_data="home")],
+    ])
+
+
+@dp.callback_query(F.data == "toolsmenu")
+async def tools_menu(callback: CallbackQuery, state: FSMContext):
+    await open_screen(callback, state, tools_text(), tools_keyboard())
+
+
+@dp.callback_query(F.data == "panicbtn")
+async def panic_button(callback: CallbackQuery):
+    await callback.answer()
+    await notice(callback.message.chat.id, panic_text(await do_panic(callback.from_user.id)), ttl=15)
+
+
+def help_text():
+    return "\n".join([
+        bq(f"{E('play')} {sc('Commands for your chats')}"), "",
+        "<code>.Axclerate</code> <code>.Axpause</code> <code>.Axresume</code> <code>.Axstop</code>",
+        "<code>.shh</code> <code>.shh 30m</code> <code>.shh allow w | w</code>",
+        "<code>.shh allowmedia photo</code> <code>.shh log</code>",
+        "<code>.afk 2h text</code> <code>.back</code> <code>.afkhere text</code>",
+        "<code>.later 30m text</code> <code>.later 21:30 text</code>",
+        "<code>.save</code> (" + sc("reply") + ")  <code>.del 10s text</code>",
+        "<code>.tr hi text</code> <code>.tr en</code> (" + sc("reply") + ")",
+        "<code>.block w | w</code> <code>.nolinks</code> <code>.antispam</code>",
+        "<code>.kw add word | reply</code> <code>.snip add name | text</code>",
+        "<code>.panic</code>",
+        SEP,
+        f"{E('lock')} {sc('Only you can use these, and the bot deletes the command message.')}",
+        f"{E('warn')} <b>{esc(AX_WARNING)}</b>",
+    ])
+
+
+@dp.callback_query(F.data == "helpmenu")
+async def help_menu(callback: CallbackQuery, state: FSMContext):
+    await open_screen(callback, state, help_text(), back_keyboard(back_to("toolsmenu")))
+
+
+# keyword replies
+def kw_rows(uid):
+    with db() as con:
+        return con.execute("SELECT id, keyword, reply FROM kw_rules WHERE user_id=? ORDER BY id", (uid,)).fetchall()
+
+
+def kw_text(uid):
+    rows = kw_rows(uid)
+    lines = [bq(f"{E('bolt')} {sc('Keyword replies')}"), ""]
+    lines += [f"<code>{esc(r['keyword'])}</code> ➛ {esc(r['reply'][:60])}" for r in rows] or [sc("No keyword rules yet.")]
+    lines += [SEP, sc("When someone writes a keyword in a private chat, your account answers for you.")]
+    return "\n".join(lines)
+
+
+def kw_keyboard(uid):
+    rows = kw_rows(uid)
+    buttons = [btn(f"Delete {r['keyword'][:14]}", "trash", callback_data=f"kwdel:{r['id']}") for r in rows]
+    kb = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    kb.append([btn("Add Rule", "ok", style="success", callback_data="kwadd")])
+    kb.append(back_to("toolsmenu"))
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+@dp.callback_query(F.data == "kwmenu")
+async def kw_menu(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    await open_screen(callback, state, kw_text(uid), kw_keyboard(uid))
+
+
+@dp.callback_query(F.data == "kwadd")
+async def kw_ask(callback: CallbackQuery, state: FSMContext):
+    await ask(callback, state, UFlow.kw_add,
+              f"{E('bolt')} {sc('Send the keyword and the reply, separated by')} <code>|</code>\n"
+              f"{sc('Example:')} <code>price | It costs ₹99</code>")
+
+
+@dp.message(UFlow.kw_add)
+async def kw_got(message: Message, state: FSMContext):
+    if message.text == "/cancel":
+        return await flow_cancel(message, state)
+    keyword, sep, reply = (message.text or "").partition("|")
+    if not sep or not keyword.strip() or not reply.strip():
+        return await flow_retry(message, sc("Use the format: keyword | reply"))
+    uid = message.from_user.id
+    if not kw_add(uid, keyword, reply):
+        return await flow_retry(message, f"{sc('You already have')} {MAX_KEYWORDS} {sc('keyword rules.')}")
+    await flow_end(message, state, kw_text(uid), kw_keyboard(uid))
+
+
+@dp.callback_query(F.data.startswith("kwdel:"))
+async def kw_delete(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    kw_remove(uid, rule_id=int(callback.data.split(":")[1]))
+    await open_screen(callback, state, kw_text(uid), kw_keyboard(uid))
+
+
+# snippets
+def sn_text(uid):
+    items = snippets_list(uid)
+    lines = [bq(f"{E('pin')} {sc('Snippets')}"), ""]
+    lines += [f"<code>.{esc(n)}</code> ➛ {esc(t[:60])}" for n, t in items] or [sc("No snippets yet.")]
+    lines += [SEP, sc("Type .name in any chat and your message turns into the saved text.")]
+    return "\n".join(lines)
+
+
+def sn_keyboard(uid):
+    buttons = [btn(f"Delete .{n}", "trash", callback_data=f"sndel:{n}") for n, _t in snippets_list(uid)]
+    kb = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    kb.append([btn("Add Snippet", "ok", style="success", callback_data="snadd")])
+    kb.append(back_to("toolsmenu"))
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+@dp.callback_query(F.data == "snmenu")
+async def sn_menu(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    await open_screen(callback, state, sn_text(uid), sn_keyboard(uid))
+
+
+@dp.callback_query(F.data == "snadd")
+async def sn_ask(callback: CallbackQuery, state: FSMContext):
+    await ask(callback, state, UFlow.sn_add,
+              f"{E('pin')} {sc('Send the name and the text, separated by')} <code>|</code>\n"
+              f"{sc('Example:')} <code>price | It costs ₹99</code>")
+
+
+@dp.message(UFlow.sn_add)
+async def sn_got(message: Message, state: FSMContext):
+    if message.text == "/cancel":
+        return await flow_cancel(message, state)
+    name, sep, text = (message.text or "").partition("|")
+    if not sep or not text.strip():
+        return await flow_retry(message, sc("Use the format: name | text"))
+    uid = message.from_user.id
+    res = snippet_add(uid, name, text)
+    errors = {"name": sc("Name: 1-12 letters, numbers or _"),
+              "reserved": sc("That name is a command, pick another."),
+              "limit": f"{sc('You already have')} {MAX_SNIPPETS} {sc('snippets.')}"}
+    if res != "ok":
+        return await flow_retry(message, errors[res])
+    await flow_end(message, state, sn_text(uid), sn_keyboard(uid))
+
+
+@dp.callback_query(F.data.startswith("sndel:"))
+async def sn_delete(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    snippet_remove(uid, callback.data.split(":", 1)[1])
+    await open_screen(callback, state, sn_text(uid), sn_keyboard(uid))
+
+
+# scheduled messages
+def sch_text(uid):
+    rows = sched_pending(uid)
+    lines = [bq(f"{E('time')} {sc('Scheduled messages')}"), ""]
+    for r in rows[:15]:
+        lines.append(f"{fmt_local(r['run_at'], uid)} ➛ {chat_ref(r['chat_id'], r['label'])}: {esc((r['text'] or '')[:40])}")
+    if not rows:
+        lines.append(sc("Nothing scheduled."))
+    lines += [SEP, "<code>.later 30m text</code>  <code>.later 21:30 text</code>", f"{sc('Timezone')} ➛ {fmt_tz(user_tz(uid))}"]
+    return "\n".join(lines)
+
+
+def sch_keyboard(uid):
+    buttons = [btn(f"✖ {fmt_local(r['run_at'], uid)}", callback_data=f"schdel:{r['id']}") for r in sched_pending(uid)[:15]]
+    kb = [buttons[i:i + 2] for i in range(0, len(buttons), 2)]
+    kb.append(back_to("toolsmenu"))
+    return InlineKeyboardMarkup(inline_keyboard=kb)
+
+
+@dp.callback_query(F.data == "schmenu")
+async def sch_menu(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    await open_screen(callback, state, sch_text(uid), sch_keyboard(uid))
+
+
+@dp.callback_query(F.data.startswith("schdel:"))
+async def sch_delete(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    with db() as con:
+        con.execute("DELETE FROM scheduled WHERE id=? AND owner_id=?", (int(callback.data.split(":")[1]), uid))
+    await open_screen(callback, state, sch_text(uid), sch_keyboard(uid))
+
+
+# activity log
+def act_text(uid):
+    with db() as con:
+        rows = con.execute("SELECT * FROM activity WHERE user_id=? ORDER BY ts DESC LIMIT 15", (uid,)).fetchall()
+    lines = [bq(f"{E('list')} {sc('Recent activity')}"), ""]
+    for r in rows:
+        where = f" {chat_ref(r['chat_id'], r['label'])}" if r["chat_id"] else ""
+        detail = f" · {esc(r['detail'])}" if r["detail"] else ""
+        lines.append(f"{fmt_local(r['ts'], uid)} · <b>{sc(r['kind'])}</b>{where}{detail}")
+    if not rows:
+        lines.append(sc("Nothing yet."))
+    return "\n".join(lines)
+
+
+@dp.callback_query(F.data == "actmenu")
+async def act_menu(callback: CallbackQuery, state: FSMContext):
+    await open_screen(callback, state, act_text(callback.from_user.id), back_keyboard(back_to("toolsmenu")))
+
+
+# ---- Language -----------------------------------------------------------------------------
+@dp.callback_query(F.data == "langmenu")
+async def lang_menu(callback: CallbackQuery, state: FSMContext):
+    cur = get_lang(callback.from_user.id)
+    text = "\n".join([bq(f"{E('globe')} {sc('Language')}"), "", sc("Choose your language.")])
+    kb = InlineKeyboardMarkup(inline_keyboard=[
+        [btn(("✓ " if cur == "en" else "") + "English", callback_data="setlang:en"),
+         btn(("✓ " if cur == "hi" else "") + "हिन्दी", callback_data="setlang:hi")],
+        [btn("Main Menu", "home", callback_data="home")],
+    ])
+    await open_screen(callback, state, text, kb)
+
+
+@dp.callback_query(F.data.startswith("setlang:"))
+async def lang_set(callback: CallbackQuery, state: FSMContext):
+    lang = callback.data.split(":")[1]
+    if lang not in ("en", "hi"):
+        return await callback.answer()
+    set_lang(callback.from_user.id, lang)
+    _LANG.set(lang)                      # the very next screen is already in the new language
+    uid = callback.from_user.id
+    await open_screen(callback, state, home_text(uid, callback.from_user.first_name),
+                      home_keyboard(uid == OWNER_ID))
+
+
+class LangMiddleware(BaseMiddleware):
+    """Every update is answered in the language of the person it concerns."""
+    async def __call__(self, handler, event, data):
+        token = _LANG.set(get_lang(_update_user(event)))
+        try:
+            return await handler(event, data)
+        finally:
+            _LANG.reset(token)
+
+
+def _update_user(update):
+    for attr in ("business_message", "edited_business_message"):
+        m = getattr(update, attr, None)
+        if m:
+            return conn_owner(m.business_connection_id)
+    deleted = update.deleted_business_messages
+    if deleted:
+        return conn_owner(deleted.business_connection_id)
+    for obj in (update.message, update.callback_query):
+        if obj and obj.from_user:
+            return obj.from_user.id
+    return None
+
+
+dp.update.outer_middleware(LangMiddleware())
+
+
+# ---- free trial introduction ----------------------------------------------------------------
+def trial_intro_text(uid):
+    end = trial_expiry(uid)
+    lines = [bq(f"{E('gift')} {sc('New: deleted message saver')}"), "",
+             sc("When someone deletes a message in your private chats, the bot sends it to you here."),
+             sc("Connect this bot in Settings → Business → Chatbots.")]
+    if is_premium(uid):
+        lines += ["", f"{E('star')} {sc('It is included in your Premium.')}"]
+    elif end:
+        lines += ["", f"{E('gift')} <b>{sc('Free trial unlocked')}</b>",
+                  row("calendar", "Trial Ends", f"{end:%d %b %Y %H:%M} UTC"),
+                  f"{E('star')} {sc('Keep it after the trial with Premium.')}"]
+    return "\n".join(lines)
+
+
+async def send_trial_intro(uid):
+    """Tell a user about the saver + free trial (once). Returns False if they can't be reached."""
+    with db() as con:
+        con.execute("UPDATE users SET trial_notified=1 WHERE user_id=?", (uid,))
+    try:
+        with use_lang(uid):
+            await bot.send_message(uid, trial_intro_text(uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [btn("Deleted Messages", "trash", style="primary", callback_data="delmenu")],
+                [btn("Main Menu", "home", callback_data="home")]]))
+        return True
+    except Exception:
+        logging.info("could not send the trial intro to %s", uid)
+        return False
+
+
+async def announce_trial_loop():
+    """Once after the update: every user who has not heard about the trial gets the message."""
+    await asyncio.sleep(20)
+    with db() as con:
+        ids = [r["user_id"] for r in con.execute("SELECT user_id FROM users WHERE banned=0 AND trial_notified=0")]
+    for uid in ids:
+        await send_trial_intro(uid)
+        await asyncio.sleep(0.06)  # gentle rate limiting
+    logging.info("Trial announcement finished (%d users)", len(ids))
+
+
+# ---- background housekeeping ----------------------------------------------------------------
+async def run_due_jobs():
+    with db() as con:
+        rows = con.execute("SELECT * FROM scheduled WHERE run_at<=? ORDER BY run_at LIMIT 20", (time.time(),)).fetchall()
+        if rows:
+            marks = ",".join("?" * len(rows))
+            con.execute(f"DELETE FROM scheduled WHERE id IN ({marks})", [r["id"] for r in rows])
+    for r in rows:
+        uid, cid = r["owner_id"], r["connection_id"]
+        if conn_owner(cid) is None:
+            continue
+        try:
+            if r["kind"] == "send":
+                await _send_as_owner(cid, r["chat_id"], r["text"])
+                log_activity(uid, "scheduled sent", r["chat_id"], r["label"], (r["text"] or "")[:60])
+            else:
+                await _delete_biz(cid, [r["message_id"]])
+        except Exception:
+            logging.exception("scheduled job failed")
+            if r["kind"] == "send":
+                with use_lang(uid):
+                    await notice(uid, f"{E('err')} {sc('A scheduled message could not be sent.')}", ttl=15)
+
+
+async def expire_shh():
+    t = time.time()
+    for key, cfg in list(_SHH.items()):
+        if cfg["until"] and cfg["until"] <= t:
+            shh_drop(key)
+            owner = conn_owner(key[0])
+            if owner:
+                with use_lang(owner):
+                    await notice(owner, f"{E('lock')} {sc('Shh ended')} ➛ {chat_ref(key[1], cfg['label'])}", ttl=12)
+                log_activity(owner, "shh off", key[1], cfg["label"], "timer")
+
+
+def purge_old():
+    cutoff = (now() - timedelta(hours=DELETED_CACHE_HOURS)).isoformat()
+    with db() as con:
+        con.execute("DELETE FROM msg_cache WHERE sent_at<?", (cutoff,))
+        con.execute("DELETE FROM activity WHERE ts<?", (time.time() - 30 * 86400,))
+
+
+async def housekeeping_loop():
+    tick = 0
+    while True:
+        try:
+            await run_due_jobs()
+            await expire_shh()
+            if tick % 300 == 0:
+                purge_old()
+        except Exception:
+            logging.exception("housekeeping failed")
+        tick += 1
+        await asyncio.sleep(1)
+
+
+def clean_temp_media():
+    """Files are only temporary unless SAVE_MEDIA_LOCALLY is on: remove anything left over."""
+    if TEMP_DIR.exists():
+        for f in TEMP_DIR.iterdir():
+            f.unlink(missing_ok=True)
 
 
 @dp.business_message()
@@ -1962,20 +4172,25 @@ async def archive_reply(message: Message):
         return
 
     # 7. Download, deliver to the owner, then count it.
-    user_dir = SAVE_DIR / str(owner_id)
-    user_dir.mkdir(parents=True, exist_ok=True)
-    filepath = user_dir / f"{message.chat.id}_{original.message_id}_{media_type}{extension}"
+    if SAVE_MEDIA_LOCALLY:
+        user_dir = SAVE_DIR / str(owner_id)
+        user_dir.mkdir(parents=True, exist_ok=True)
+        filepath = user_dir / f"{message.chat.id}_{original.message_id}_{media_type}{extension}"
+    else:  # temporary file: removed again as soon as it has been delivered and backed up
+        TEMP_DIR.mkdir(parents=True, exist_ok=True)
+        filepath = TEMP_DIR / f"{owner_id}_{message.chat.id}_{original.message_id}_{uuid.uuid4().hex[:8]}{extension}"
 
     try:
         await bot.download(media.file_id, destination=filepath)
         sent = await deliver(media_type, owner_id, FSInputFile(filepath))
-        await store_media_copy(sent, owner_id, message.chat.id, media_type)
+        await store_media_copy(sent, owner_id, message.chat, media_type)
 
         with db() as con:
             con.execute(
                 "INSERT INTO archives(user_id, source_chat_id, source_message_id, media_type, file_path, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (owner_id, message.chat.id, original.message_id, media_type, str(filepath), now().isoformat()))
+                (owner_id, message.chat.id, original.message_id, media_type,
+                 str(filepath) if SAVE_MEDIA_LOCALLY else "", now().isoformat()))
             con.execute(
                 "INSERT INTO usage_daily(user_id, day, count) VALUES (?, ?, 1) "
                 "ON CONFLICT(user_id, day) DO UPDATE SET count = count + 1",
@@ -1989,6 +4204,9 @@ async def archive_reply(message: Message):
         logging.exception("Media download or delivery failed")
         forget_trigger()  # failed attempts don't count and can be retried
         await notice(owner_id, f"{E('err')} {sc('Media retrieval failed. Please try again.')}", ttl=10)
+    finally:
+        if not SAVE_MEDIA_LOCALLY:
+            filepath.unlink(missing_ok=True)
 
 
 # ----------------------------------------------------------------------------
@@ -2124,16 +4342,21 @@ async def main():
     await restore_if_missing()
     keep_alive()
     init_db()
-    load_shh()
+    load_runtime_state()
     load_emoji_ids()
+    clean_temp_media()
     _TASKS.add(asyncio.create_task(backup_loop()))
+    _TASKS.add(asyncio.create_task(housekeeping_loop()))
+    if ANNOUNCE_TRIAL_ON_START:
+        _TASKS.add(asyncio.create_task(announce_trial_loop()))
     if not HAS_ICON:
         print("Note: aiogram < 3.25 -> button icons/colours disabled (pip install -U aiogram)")
     print("Media Archive Bot Started Successfully!")
     print("Bot is running...")
     await dp.start_polling(
         bot,
-        allowed_updates=["message", "business_connection", "business_message", "callback_query"]
+        allowed_updates=["message", "business_connection", "business_message", "edited_business_message",
+                         "deleted_business_messages", "callback_query"]
     )
 
 
