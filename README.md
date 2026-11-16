@@ -1,235 +1,300 @@
 <div align="center">
 
-# 👾 Erebus Spy Bot
+# ✨ Erebus · Media Archive Bot 👾
 
-### Archive any Telegram media in one reply. Premium, UPI payments, auto-backups.
+**Save any photo, video or file from your chats with one word, catch deleted messages, and automate your Telegram account.**
+Telegram Business bot · Archive · Deleted-message saver · Repeater · Auto-reply · Scheduler · Premium · Admin panel
 
-![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)
-![aiogram](https://img.shields.io/badge/aiogram-3.25%2B-2CA5E0?style=for-the-badge&logo=telegram&logoColor=white)
-![SQLite](https://img.shields.io/badge/SQLite-Database-003B57?style=for-the-badge&logo=sqlite&logoColor=white)
-![Telegram Business](https://img.shields.io/badge/Telegram-Business-8A2BE2?style=for-the-badge&logo=telegram&logoColor=white)
-![UPI](https://img.shields.io/badge/Payments-UPI-FF9800?style=for-the-badge)
-![Backups](https://img.shields.io/badge/Backups-Auto-2ECC71?style=for-the-badge)
+![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)
+![aiogram](https://img.shields.io/badge/aiogram-3.x-26A5E4?logo=telegram&logoColor=white)
+![SQLite](https://img.shields.io/badge/Database-SQLite-003B57?logo=sqlite&logoColor=white)
+![Languages](https://img.shields.io/badge/Languages-English%20%7C%20%E0%A4%B9%E0%A4%BF%E0%A4%A8%E0%A5%8D%E0%A4%A6%E0%A5%80-8A2BE2)
+![Status](https://img.shields.io/badge/Status-Active-success)
 
-[**@ErebusSpyBot**](https://t.me/ErebusSpyBot) · [**Developer**](https://t.me/Noxmirage) · [**Updates**](https://t.me/linksfromerebus) · [**Channel**](https://t.me/HazenNexus)
+*By Haze · [@Noxmirage](https://t.me/Noxmirage) · Channel: [@linksfromerebus](https://t.me/linksfromerebus)*
+
+[▶️ Watch the 1-minute tutorial](https://youtube.com/shorts/KRKAUY3g7wk?si=G5eeDrXGJ5ZGfX5v)
 
 </div>
 
 ---
 
-## ✨ Features
+## 📑 Table of contents
 
-| | Feature | Details |
-|---|---|---|
-| 📸 | **Business archiving** | Reply to media with the trigger word (default `shit`) from your connected Business account |
-| 🔐 | **Owner-only trigger** | Only the owner of a Business connection can trigger it; media goes only to that owner |
-| ⚡ | **Daily limits** | 20/day free by default, custom limit per user, unlimited for premium |
-| 💳 | **UPI payments** | Custom QR per plan with amount pre-filled, screenshot sent to admin with ✅ Approve / ❌ Reject |
-| ⭐ | **Premium** | Plans from ₹29, stacks on top of remaining time, user notified instantly |
-| 🛠 | **Admin panel** | Stats, users, premium list, broadcast, direct message, ban / unban |
-| 🔒 | **Force-join** | Users must join your channel and group first |
-| 🎨 | **Animated emojis** | Premium emoji IDs built in, coloured buttons with icons |
-| 🧹 | **Self-cleaning chat** | Menus edit in place; prompts, QR images and commands delete themselves |
-| 💾 | **Auto backups** | Database pinned in a private channel and auto-restored after a host crash |
-| 🗂 | **Media vault** | Every archived file is copied to a private media channel |
-
----
-
-## 🧭 How it works
-
-```mermaid
-flowchart LR
-    A[👤 You reply to media<br/>with the trigger word] --> B[🤖 Erebus Spy Bot]
-    B --> C[📥 Copy sent to<br/>your private chat]
-    B --> D[🗂 Copy saved to<br/>media channel]
-    B --> E[(💾 SQLite)]
-    E -->|every 3h + after payments| F[📌 Pinned backup<br/>in data channel]
-    F -.->|host crash| G[♻️ Auto-restore<br/>on startup]
-```
-
-### 👤 For users
-
-1. Start the bot and join the channel and group
-2. Connect the bot in **Settings → Business → Chatbots**
-3. In any chat, **reply to a media message** with the trigger word
-4. The copy arrives in your private chat with the bot
-
-### 💳 Buying premium
-
-1. Tap **Buy Premium** and choose a plan
-2. Scan the QR with any UPI app and pay the exact amount
-3. Tap **I've Paid** and send the screenshot
-4. The admin approves and you get a confirmation message
-
-| Plan | Validity | Price |
-|:---:|:---:|:---:|
-| 🥉 1 Month | 30 days | **₹29** |
-| 🥈 2 Months | 60 days | **₹39** |
-| 🥇 3 Months | 90 days | **₹49** |
+1. [What it does](#-what-it-does)
+2. [Quick start](#-quick-start)
+3. [Configuration](#%EF%B8%8F-configuration)
+4. [How users use it](#-how-users-use-it)
+5. [Commands you type in your chats](#-commands-you-type-in-your-chats)
+6. [Deleted-message saver & free trial](#-deleted-message-saver--free-trial)
+7. [Plans, limits & payments](#-plans-limits--payments)
+8. [Admin panel & commands](#-admin-panel--commands)
+9. [Storage, privacy & backups](#-storage-privacy--backups)
+10. [Project files](#-project-files)
+11. [Troubleshooting](#-troubleshooting)
+12. [Security notes](#-security-notes)
 
 ---
 
-## 📋 Requirements
+## 🌟 What it does
 
-> [!IMPORTANT]
-> Connecting a bot as a chatbot needs **Telegram Premium** on the account that owns the Business connection.
-
-- 🐍 Python **3.10+**
-- 🤖 A bot token from [@BotFather](https://t.me/BotFather) with **Business Mode** enabled (Bot Settings → Business Mode)
-- 👮 The bot added as **administrator** in your channel and group (needed to check membership)
-- 📢 Two private channels with the bot as admin: one for media, one for database backups
+| Area | What you get |
+|---|---|
+| 📸 **Archive** | Reply to any media with `shit` in any chat and the copy lands in your bot chat. Photos, videos, GIFs, files, video notes |
+| 🗑 **Deleted-message saver** | When someone deletes a message in your private chats, the bot sends it to you. Premium feature with a **3-day free trial** for everyone |
+| ⚡ **Repeater** | Repeat messages, photos, stickers or voice notes. Presets, random delay, pause / resume, live progress |
+| 🔇 **Shh mode** | Instantly deletes what the *other person* sends in one chat. Timers, allow-lists, optional log |
+| 💬 **Auto reply** | Away mode with schedule, per-chat messages and keyword replies |
+| ⏰ **Scheduler** | `.later` sends at a time you choose, `.del` makes messages delete themselves |
+| 🧩 **Snippets & translate** | Type `.price` to expand saved text, `.tr hi hello` to translate |
+| 🛡 **Chat rules** | Block words, link filter, anti-flood, and a one-tap `.panic` |
+| 📊 **Limits** | Daily free limit, unlimited premium, per-user custom limits, resets at 00:00 UTC |
+| 💳 **Payments** | UPI QR generated in the bot, screenshot goes to the owner, one-tap approve |
+| 🛠 **Admin panel** | Statistics, **revenue**, paged **all-users list**, user info by `@username` or ID, give / remove premium, ban, broadcast |
+| 💾 **Backups** | Database auto-backed up to Telegram and restored automatically after a host crash |
+| 🌐 **Languages** | English and Hindi menus |
+| 🎨 **UI** | Small-caps font, animated custom emojis (plain fallback), self-cleaning chat |
 
 ---
 
-## 🚀 Setup
+## 🚀 Quick start
+
+### 1. Requirements
+
+- Python **3.10 or newer**
+- A bot token from [@BotFather](https://t.me/BotFather) (enable **Business Mode** for the bot there)
+- A Telegram account with **Telegram Premium** (Business chatbots are a Premium feature of the account that connects the bot)
+- (Recommended) a private channel for backups, with the bot added as **admin**
+
+### 2. Install
 
 ```bash
-git clone https://github.com/<your-username>/<your-repo>.git
-cd <your-repo>
-
-python -m venv venv
-source venv/bin/activate        # Windows: venv\Scripts\activate
-
-pip install -U "aiogram>=3.25" python-dotenv "qrcode[pil]"
-
-cp .env.example .env            # then edit .env
-python bot.py
+pip install -U aiogram python-dotenv aiohttp "qrcode[pil]"
 ```
 
-### ⚙️ Configuration (`.env`)
+> `aiogram` 3.25 or newer gives you coloured buttons with icons. Older 3.x versions still work, the icons are simply skipped.
+
+### 3. Create a `.env` file next to the bot
 
 ```env
-# --- required ---------------------------------------------------
-BOT_TOKEN=123456:ABC-your-token
+BOT_TOKEN=123456:your-token-here
 OWNER_ID=123456789
-
-# --- membership gate -------------------------------------------
-CHANNEL=@linksfromerebus
-GROUP=@ecochamber
-
-# --- limits & payments -----------------------------------------
-FREE_DAILY_LIMIT=20
-UPI_ID=yourname@upi
-UPI_NAME=Erebus Premium
-
-# --- private channels (numeric IDs, NOT invite links) ----------
-MEDIA_CHAT_ID=-100xxxxxxxxxx      # copies of every archived file
-BACKUP_CHAT_ID=-100yyyyyyyyyy     # database backups (pinned)
-BACKUP_EVERY_HOURS=3
-
-# --- optional ---------------------------------------------------
-DB_PATH=bot_data.sqlite3
-USE_CUSTOM_EMOJI=1
+CHANNEL=@yourchannel
+GROUP=@yourgroup
+BACKUP_CHAT_ID=-1001234567890
+MEDIA_CHAT_ID=-1001234567890
 ```
 
-| Variable | Required | Default | Description |
-|---|:---:|---|---|
-| `BOT_TOKEN` | ✅ | n/a | Token from @BotFather |
-| `OWNER_ID` | ✅ | n/a | Your numeric Telegram ID (admin) |
-| `CHANNEL` | | `@linksfromerebus` | Channel users must join |
-| `GROUP` | | `@ecochamber` | Group users must join |
-| `DB_PATH` | | `bot_data.sqlite3` | Database file (use a persistent disk if your host has one) |
-| `FREE_DAILY_LIMIT` | | `20` | Daily archives for free users |
-| `UPI_ID` | | in code | UPI ID that receives payments |
-| `UPI_NAME` | | `Erebus Premium` | Payee name shown in the UPI app |
-| `MEDIA_CHAT_ID` | | off | Private channel for media copies |
-| `BACKUP_CHAT_ID` | | owner's chat | Private channel for database backups |
-| `BACKUP_EVERY_HOURS` | | `3` | Backup interval |
-| `USE_CUSTOM_EMOJI` | | `1` | `0` switches animated emojis off |
+### 4. Run
 
-> [!TIP]
-> Invite links like `t.me/+abc...` cannot be used. Add the bot as admin, then forward a channel message to an ID bot (for example @getidsbot) to get the `-100…` number.
-
-Plans are set near the top of `bot.py`:
-
-```python
-PLANS = {1: (30, 29), 2: (60, 39), 3: (90, 49)}   # months: (days, price in INR)
+```bash
+python botV6.py
 ```
+
+You should see `Media Archive Bot Started Successfully!`. Open the bot and send `/start`.
+
+### 5. Connect your account
+
+1. In Telegram open **Settings → Business → Chatbots**.
+2. Add your bot.
+3. Give it the permissions you need: **reply to messages** (archive, repeater, auto-reply) and **manage / delete messages** (`.shh`, `.del`, rules, command cleanup).
+
+> ⚠️ **Run only ONE copy of the bot per token.** Two copies split the updates and buttons become unreliable.
 
 ---
 
-## 🛠 Commands
+## ⚙️ Configuration
 
-### 👤 Users
+Settings are read from `.env` (or environment variables). The options marked ✏️ can also be edited at the top of `botV6.py`.
 
-| Command | Action |
+### Required
+
+| Setting | Meaning |
 |---|---|
-| `/start` | Open the main menu |
-| `/cancel` | Cancel the current payment step |
+| `BOT_TOKEN` | Your bot token from @BotFather |
+| `OWNER_ID` | Your numeric Telegram ID. Main admin, receives payment screenshots |
 
-### 👑 Admin (owner only)
+### Optional
 
-Everything is also reachable from the **🛠 Admin Panel** button.
+| Setting | Default | Meaning |
+|---|---|---|
+| `CHANNEL` / `GROUP` | in file | Users must join both before using the bot |
+| `FREE_DAILY_LIMIT` | `20` | Free archives per day |
+| `UPI_ID` / `UPI_NAME` | in file | UPI address and name on the payment QR |
+| `PLANS` ✏️ | `1 / 2 / 3 months` | `{months: (days, price)}` → ₹29, ₹39, ₹49 |
+| `DB_PATH` | `bot_data.sqlite3` | Database file |
+| `SAVE_MEDIA_LOCALLY` ✏️ | `0` (off) | `1` keeps every archived file in `./saved_media`. Off means files are **temporary** and deleted after delivery and backup |
+| `TG_MEDIA_BACKUP` ✏️ | `1` (on) | Send a copy of every archived file to `MEDIA_CHAT_ID` |
+| `MEDIA_CHAT_ID` | falls back to `BACKUP_CHAT_ID`, then your chat | Private channel (`-100…`) that stores media copies |
+| `BACKUP_CHAT_ID` | your chat | Where the database backup is posted and pinned |
+| `BACKUP_EVERY_HOURS` | `3` | Hours between automatic database backups |
+| `TRIAL_DAYS` ✏️ | `3` | Free trial of the deleted-message saver |
+| `DELETED_CACHE_HOURS` | `72` | How long copies of incoming messages are kept for the saver |
+| `ANNOUNCE_TRIAL_ON_START` | `1` | Tell existing users about the trial once after an update |
+| `USE_CUSTOM_EMOJI` | `1` | Set `0` if animated emojis don't show |
+| `EMOJI_FILE` | `emoji_ids.json` | Animated-emoji overrides (set with `/emojis`) |
+
+---
+
+## 👤 How users use it
+
+1. Send `/start`, join the channel and group, tap **I've Joined**.
+2. Connect the bot under **Settings → Business → Chatbots**.
+3. In any chat, **reply to a photo / video / file with `shit`**. The copy arrives in your bot chat.
+4. Only the account owner can trigger it. The `shit` message itself stays in your chat history as you wrote it.
+
+**Main menu**
+
+| Button | What it does |
+|---|---|
+| How To Archive | Steps and the video tutorial |
+| My Premium / My Statistics | Plan, expiry, today's usage, total archived |
+| Membership | Re-check channel and group membership |
+| Buy Premium | Plans and UPI payment |
+| Repeated Message | Configure the repeater |
+| Deleted Messages | Deleted-message saver status, on / off |
+| Auto Reply | Away mode, schedule, timezone |
+| Tools | Keyword replies, snippets, scheduled messages, activity log, commands, panic |
+| Language | English or हिन्दी |
+
+---
+
+## ⌨️ Commands you type in your chats
+
+These work in **your own chats** through the Business connection. Only you can use them, and the bot removes the command message again. Everything is also configurable from the bot menus.
+
+### ⚡ Repeater
 
 | Command | What it does |
 |---|---|
-| `/premium @user days` | Give premium for N days (user is notified) |
-| `/removepremium @user` | Remove premium |
-| `/setlimit @user number` | Custom daily limit for one user |
-| `/setlimit @user default` | Reset to the default limit |
-| `/userinfo @user` | Plan, usage, total archives, connections, last seen |
-| `/msg @user text` | Message one user (an ID works too) |
-| `/ban @user` · `/unban @user` | Block or unblock a user |
-| `/backup` | Send a database backup now |
-| `/restore` | Reply to a backup file to restore it |
-| `/emojis` | List emoji names and their custom IDs |
-| `/emojireset name` or `all` | Remove custom emoji overrides |
+| `.Axclerate` | Start with your saved settings |
+| `.Axclerate 20 0.5 hi \| hello` | 20 messages, every 0.5 s, cycling the texts |
+| `.Axclerate 20 0.5-2` | Random delay between 0.5 and 2 seconds |
+| `.Axclerate morning` | Start a saved **preset** |
+| `.Axpause` · `.Axresume` · `.Axstop` | Control the running repeater (buttons on the live status message work too) |
 
-> [!NOTE]
-> Users can only be found by `@username` after they have started the bot.
+Minimum interval is **0.1 s**. The cycle can contain text, photos, stickers, voice notes, videos and files (add them from **Repeated Message → Add Media**).
 
----
+> ⚠️ Fast repeating can get your Telegram account limited or banned. The bot warns about this and does **not** add restrictions: use at your own risk.
 
-## 🎨 Interface
+### 🔇 Shh mode
 
-- 🧩 Panel-style screens: quote header, emoji rows, wide buttons, small-caps font
-- 🌈 Coloured buttons (blue, green, red) and custom-emoji icons on `aiogram >= 3.25`
-- ✨ Animated emoji IDs built in. To change one, send the bot `name` + a custom emoji (example: `star` + your emoji). IDs save to `emoji_ids.json`
-- 🧯 If anything misbehaves, set `USE_CUSTOM_EMOJI=0`
-
----
-
-## 💾 Backups & recovery
-
-```diff
-+ Database : compressed snapshot sent to BACKUP_CHAT_ID and pinned
-+ Triggers : every BACKUP_EVERY_HOURS hours, after each approved payment, or /backup
-+ Restore  : automatic on startup if the database file is missing, or /restore manually
-+ Media    : every archived file is copied into MEDIA_CHAT_ID with owner, chat and time
-- Not included : emoji_ids.json and the local saved_media/ folder
-- Limit        : bots can download files up to 20 MB; data since the last backup is lost in a crash
-```
-
----
-
-## 🗄 Database
-
-SQLite, created and migrated automatically on start. All timestamps are UTC and the daily limit resets at **00:00 UTC**.
-
-| Table | Purpose |
+| Command | What it does |
 |---|---|
-| `users` | Everyone who started the bot, plus `custom_limit` and `banned` |
-| `premium` | Premium expiry per user |
-| `business_connections` | Connected Business accounts and their owners |
-| `usage_daily` | Per-user, per-day counter used for limits |
-| `archives` | History of every archived file |
-| `payments` | Requests: pending / approved / rejected |
-| `processed_messages` | Stops the same trigger being handled twice |
-| `broadcasts` | Broadcast history |
+| `.shh` | Toggle for **this chat only**. The other person's messages are deleted instantly, yours never are |
+| `.shh 30m` | Turn on for 30 minutes (`s`, `m`, `h`, `d`) |
+| `.shh allow urgent \| help` | Keep messages containing these words |
+| `.shh allowmedia photo voice` | Keep these media types |
+| `.shh log` | Save a copy of what is deleted (premium / trial) |
+| `.shh off` · `.mute` | Turn off · alias of `.shh` |
+
+### 💬 Auto reply, scheduling and more
+
+| Command | What it does |
+|---|---|
+| `.afk 2h in a meeting` · `.back` | Away reply on / off (each chat gets it once every 6 hours) |
+| `.afkhere message` | Different away message for just this chat |
+| `.later 30m text` · `.later 21:30 text` | Send later (clock times use your timezone) |
+| `.del 10s text` | Send text that deletes itself. Or reply to your own message with `.del 10s` |
+| `.save` | Reply to any message to save it into the bot |
+| `.tr hi how are you` | Turn your message into Hindi (any language code). Reply with `.tr en` to read a message privately |
+| `.kw add price \| It costs ₹99` | Keyword auto-reply (`.kw del`, `.kw list`) |
+| `.snip add price \| It costs ₹99` | Snippet, then type `.price` to expand it |
+| `.block spam \| scam` · `.block off` | Delete messages from this person containing these words |
+| `.nolinks` · `.antispam` | Toggle link filter / flood filter for this chat |
+| `.panic` (or `/panic`) | Stop all repeaters, shh, scheduled sends and away mode |
 
 ---
 
-## 📁 Project structure
+## 🗑 Deleted-message saver & free trial
 
-```text
-.
-├── bot.py              # the whole bot
-├── requirements.txt
-├── .env.example
-└── README.md
+- Saves what the **other person** sent in your **private chats** (text, photos, videos, voice notes, stickers, files) and sends it to you in the bot the moment they delete it.
+- Needs the bot connected under **Settings → Business → Chatbots**.
+- **Premium feature**, but **every user gets a 3-day free trial**. New users start the trial when they join, existing users when the update goes live. Everyone is told about it once.
+- Copies are kept for `DELETED_CACHE_HOURS` (72 by default), then removed. Turn the saver off any time from **Deleted Messages**.
+- Messages the bot deletes itself (`.shh`, block rules) are never saved.
+
+---
+
+## 💳 Plans, limits & payments
+
+| Plan | Archives / day | Validity | Price |
+|---|---|---|---|
+| Free | 20 | – | Free |
+| Premium 1 month | Unlimited | 30 days | ₹29 |
+| Premium 2 months | Unlimited | 60 days | ₹39 |
+| Premium 3 months | Unlimited | 90 days | ₹49 |
+
+Daily counters reset at **00:00 UTC**. Premium also unlocks the deleted-message saver after the trial ends.
+
+**Payment flow**
+
+1. User opens **Buy Premium** and picks a plan.
+2. The bot generates a **UPI QR** with the amount filled in.
+3. User pays, taps **I've Paid** and sends a screenshot.
+4. The screenshot reaches the owner with **Approve / Reject** buttons.
+5. On approval premium activates instantly and the user is notified. Buying again extends it.
+
+---
+
+## 🛠 Admin panel & commands
+
+Open it with the **Admin Panel** button on the main menu (owner only).
+
+| Button | Purpose |
+|---|---|
+| Statistics | Users, active, premium, **free-trial users**, banned, joined today, archives today, pending payments, revenue |
+| **Revenue** | All time, today, 7 / 30 days, this month, by month and by plan. Counts only plans **users bought** and you approved, never premium you gave yourself |
+| **All Users** | Every user, paged, with a **Download List** CSV button. Names link to profiles |
+| Premium Users | Active premium members |
+| User Info | Details of any user by `@username` **or numeric ID** |
+| Give / Remove Premium | Extend or remove premium with a few taps |
+| Ban User / Unban User | Block or unblock |
+| Broadcast / Message One User | Message everyone or one person |
+
+| Command | What it does |
+|---|---|
+| `/userinfo @user` or `/userinfo 123456789` | Full details of a user |
+| `/premium @user days` · `/removepremium @user` | Grant / remove premium |
+| `/setlimit @user number\|default` | Custom daily limit |
+| `/ban @user` · `/unban @user` | Block or unblock |
+| `/msg @user text` | Private message |
+| `/emojis` · `/emojireset name\|all` | Animated emoji setup |
+| `/backup` · `/restore` | Back up now · reply to a backup file to restore |
+
+Every user command accepts an `@username` **or** a numeric ID. A person must have started the bot once to be found.
+
+---
+
+## 🔐 Storage, privacy & backups
+
+**Archived media**
+
+- By default files are **temporary**: downloaded, handed to the owner, copied to the Telegram backup channel, then **deleted from the server**.
+- Set `SAVE_MEDIA_LOCALLY=1` to also keep them in `./saved_media`.
+- The backup-channel caption names the owner and chat by **@username**, or by profile name as a tap-to-open link when there is no username.
+- The privacy text shown in **How To Archive** always matches your settings: if you turn off both `TG_MEDIA_BACKUP` and `SAVE_MEDIA_LOCALLY` it says *"No backup is saved, for your privacy. You can only view your saved photos here in the bot."*
+
+**Database backups**
+
+- The database is snapshotted every `BACKUP_EVERY_HOURS`, sent to `BACKUP_CHAT_ID` and **pinned**. It is also backed up right after every approved payment.
+- If the server resets, the bot finds the pinned backup on startup and **restores it automatically**.
+- `/backup` backs up now. Reply to a backup file with `/restore` to load it (a safety copy is taken first).
+- Older databases are upgraded automatically when the new version starts.
+
+---
+
+## 📂 Project files
+
 ```
-
-Created at runtime (keep out of Git): `.env`, `emoji_ids.json`, `bot_data.sqlite3`, `saved_media/`, `bot.log`
+botV6.py                 the whole bot
+README.md                this file
+.env                     your settings (never share it)
+bot_data.sqlite3         database (created automatically)
+emoji_ids.json           optional animated-emoji overrides
+saved_media/             only used when SAVE_MEDIA_LOCALLY=1
+bot.log                  log file
+```
 
 ---
 
@@ -237,30 +302,31 @@ Created at runtime (keep out of Git): `.env`, `emoji_ids.json`, `bot_data.sqlite
 
 | Problem | Fix |
 |---|---|
-| Join check always fails | Make the bot an admin in both channel and group |
-| Archive does nothing | Check the bot is under Settings → Business → Chatbots, the owner has started the bot, and the trigger word is exact |
-| No QR code | `pip install "qrcode[pil]"` |
-| Buttons without icons or colours | `pip install -U aiogram` |
-| Backups or media not appearing | Use the numeric `-100…` ID and make the bot admin with post (and pin) rights; check `bot.log` |
-| Emojis not animated | Telegram may not allow custom emojis for the bot; normal emojis are used instead |
+| Nothing happens when I reply `shit` | Check **Settings → Business → Chatbots**: the bot must be added and allowed to reply. Make sure you started the bot at least once |
+| `.shh`, `.del` or commands don't delete messages | Give the bot the **manage / delete messages** permission in the Business chatbot settings |
+| Deleted messages aren't arriving | The trial may have ended (premium needed), the saver may be off in **Deleted Messages**, or the bot isn't connected |
+| Messages flash before `.shh` deletes them | Telegram delivers a message to you before the bot can delete it. The bot deletes it as fast as it can |
+| Buttons are slow or do nothing | Make sure only **one** copy of the bot is running |
+| Animated emojis or coloured buttons don't show | Set `USE_CUSTOM_EMOJI=0`, or `pip install -U aiogram` |
+| Payment QR missing | `pip install "qrcode[pil]"`. Users still see the UPI ID |
+| No backups arrive | Set `BACKUP_CHAT_ID` to your channel ID (starts with `-100`) and make the bot an **admin** there |
+| `.tr` says translation failed | It uses Google Translate's unofficial web endpoint, which can be blocked from some hosts. Try again later |
+| "User not found" | The user must have started the bot once. Try their numeric ID |
 
 ---
 
-## 🔒 Security & responsible use
+## 🔒 Security notes
 
-> [!WARNING]
-> **Never commit `.env`**, it holds your bot token. Payments are approved **manually**, so check each screenshot against your UPI app before tapping Approve. Only `OWNER_ID` can use admin buttons and commands.
-
-This bot copies media from chats of connected Business accounts and keeps copies in your private channels. Tell users a backup copy is kept (the How To Archive screen does), restrict access to those channels, delete data on request, and follow Telegram's Terms of Service and the privacy laws that apply to you.
+- **Never share your bot token or `.env`.** If a token was ever posted publicly, revoke it in @BotFather (`/revoke`).
+- Only `OWNER_ID` can use admin features, and every admin button and command is re-checked on each press.
+- Keep your backup and media channels **private**: they contain user data.
+- The deleted-message saver stores other people's messages for a short time. Use it responsibly and respect the privacy and laws that apply to you and the people you chat with.
+- Spam tools like the repeater can get your Telegram account restricted. You are responsible for how you use them.
 
 ---
 
 <div align="center">
 
-### 👨‍💻 Credits
-
-[**@Noxmirage**](https://t.me/Noxmirage) · [**@HazenNexus**](https://t.me/HazenNexus) · [**@linksfromerebus**](https://t.me/linksfromerebus)
-
-Made with ❤️ for the Erebus community
+Made with 💜 by **Haze** · [@Noxmirage](https://t.me/Noxmirage) · [Channel](https://t.me/linksfromerebus)
 
 </div>
