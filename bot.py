@@ -14,6 +14,10 @@ import time
 import uuid
 from collections import deque
 from contextlib import contextmanager
+#Only for tha flask and web if removing web then remove import too and from requirements.txt the module instalation
+from flask import Flask, send_from_directory
+from threading import Thread
+
 from datetime import datetime, timedelta, timezone
 from io import BytesIO, StringIO
 from pathlib import Path
@@ -24,10 +28,6 @@ from dotenv import load_dotenv
 from aiogram import BaseMiddleware, Bot, Dispatcher, F
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ChatMemberStatus, ParseMode
-#Only for tha flask and web if removing web then remove import too and from requirements.txt the module instalation
-from flask import Flask, send_from_directory
-from threading import Thread
-
 from aiogram.exceptions import TelegramBadRequest, TelegramRetryAfter
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -41,6 +41,7 @@ try:
     import qrcode  # pip install "qrcode[pil]"
 except ImportError:
     qrcode = None
+
 #For Render 24/7 host a web page 
 
 app = Flask(__name__)
@@ -61,6 +62,7 @@ def run():
 def keep_alive():
     server = Thread(target=run, daemon=True)
     server.start()
+
 # ----------------------------------------------------------------------------
 # Configuration
 # ----------------------------------------------------------------------------
@@ -131,16 +133,20 @@ _SMALL_CAPS = str.maketrans(
 
 _LANG = contextvars.ContextVar("lang", default="en")   # language of the person being answered
 HI = {}                                                    # English text -> Hindi (filled below)
+HL = {}                                                    # English text -> Hinglish (filled below)
 
 
 def sc(text):
     """Bot font: 'free plan' -> 'Fʀᴇᴇ Pʟᴀɴ'. First letter of each word is a capital;
     ACRONYMS, numbers, @names and /commands stay untouched. Users who chose Hindi get the
     Hindi text from HI when there is one."""
-    if _LANG.get() == "hi":
+    lang = _LANG.get()
+    if lang == "hi":
         translated = HI.get(text)
         if translated is not None:
             return translated
+    elif lang == "hl":                       # Hinglish keeps the same bot font
+        text = HL.get(text, text)
     def word(w):
         if any(c.isdigit() or c in "@/₹_<>&" for c in w) or (w.isupper() and len(w) > 1):
             return w
@@ -291,6 +297,167 @@ HI.update({
         "मीडिया नहीं मिल सका। कृपया दोबारा कोशिश करें।",
     "No supported media found in the replied message.": "रिप्लाई किए गए मैसेज में कोई सपोर्टेड मीडिया नहीं मिला।",
     "Your access has been disabled.": "आपका एक्सेस बंद कर दिया गया है।",
+})
+
+
+# ---- new texts (edited messages, contact admin, privacy) in Hindi ----------------------
+HI.update({
+    "Contact Admin": "एडमिन से संपर्क करें", "Reply": "जवाब दें", "You are the admin.": "आप ही एडमिन हैं।",
+    "Write your message for the admin. You can send text, a photo, voice note or file.":
+        "एडमिन के लिए अपना मैसेज लिखें। आप टेक्स्ट, फ़ोटो, वॉइस नोट या फ़ाइल भेज सकते हैं।",
+    "Please wait a few seconds before sending another message.": "दूसरा मैसेज भेजने से पहले कुछ सेकंड रुकें।",
+    "Sent to the admin. The reply will arrive here.": "एडमिन को भेज दिया गया। जवाब यहीं आएगा।",
+    "Message from the admin": "एडमिन का मैसेज",
+    "That type is not supported. Send text, a photo, sticker, voice, video or file.":
+        "यह टाइप सपोर्टेड नहीं है। टेक्स्ट, फ़ोटो, स्टिकर, वॉइस, वीडियो या फ़ाइल भेजें।",
+    "Edited message": "एडिट किया गया मैसेज", "Before": "पहले", "After": "बाद में", "Original": "ओरिजिनल", "Now": "अब",
+    "It also tells you when they edit a message, with the old and the new text.":
+        "जब कोई मैसेज एडिट करता है, तो यह पुराना और नया टेक्स्ट दोनों भी भेजता है।",
+    "For privacy, nothing is stored on our server and only you can see your saved photos and media here in your bot. A private recovery copy is kept in the bot owner Telegram archive.":
+        "प्राइवेसी के लिए हमारे सर्वर पर कुछ सेव नहीं होता और आपकी सेव की हुई फ़ोटो और मीडिया सिर्फ़ आप ही यहाँ अपने बॉट में देख सकते हैं। रिकवरी के लिए एक प्राइवेट कॉपी बॉट मालिक के टेलीग्राम आर्काइव में रखी जाती है।",
+    "For privacy reasons no backup is stored. Only you can see your photos and media here in your bot.":
+        "प्राइवेसी के कारण कोई बैकअप सेव नहीं किया जाता। आपकी फ़ोटो और मीडिया सिर्फ़ आप ही यहाँ अपने बॉट में देख सकते हैं।",
+})
+
+# ---- Hinglish (Hindi written in English letters) ------------------------------------------
+HL.update({
+    "Welcome": "Swagat hai", "Media Archive Bot": "Media Archive Bot", "Plan": "Plan", "Premium": "Premium",
+    "Free": "Free", "Today": "Aaj", "Deleted Saver": "Delete Saver",
+    "Reply to any media with": "Kisi bhi media ko reply karke likho",
+    "How To Archive": "Archive Kaise Kare", "My Premium": "Mera Premium", "My Statistics": "Mere Stats",
+    "Membership": "Membership", "Buy Premium": "Premium Kharido", "Repeated Message": "Repeat Message",
+    "Deleted Messages": "Delete Messages", "Auto Reply": "Auto Reply", "Tools": "Tools", "Language": "Language",
+    "Updates": "Updates", "Main Menu": "Main Menu", "Back": "Wapas", "Cancelled.": "Cancel ho gaya.",
+    "Send /cancel to stop.": "Rokne ke liye /cancel bhejo.", "Example:": "Example:",
+    "Access locked": "Access band hai", "Join Channel": "Channel Join Karo", "Join Group": "Group Join Karo",
+    "I've Joined": "Maine Join Kar Liya",
+    "Join our channel and group, then tap I've Joined.": "Hamara channel aur group join karo, phir I've Joined dabao.",
+    "How to archive media": "Media archive kaise kare", "Step 1": "Step 1", "Step 2": "Step 2", "Step 3": "Step 3", "Step 4": "Step 4",
+    "Start this bot": "Is bot ko start karo",
+    "Settings → Business → Chatbots → add this bot": "Settings → Business → Chatbots → is bot ko add karo",
+    "In any chat, reply to a media with": "Kisi bhi chat me media ko reply karke likho",
+    "The copy arrives here, in your private chat": "Copy yahin, tumhari private chat me aa jayegi",
+    "Watch the video tutorial": "Video tutorial dekho", "Watch Tutorial": "Tutorial Dekho",
+    "A backup copy is also kept in our private archive.": "Ek backup copy hamare private archive me bhi rakhi jati hai.",
+    "For privacy, nothing is stored on our server and only you can see your saved photos and media here in your bot. A private recovery copy is kept in the bot owner Telegram archive.":
+        "Privacy ke liye hamare server par kuch save nahi hota aur tumhari saved photos aur media sirf tum hi yahan apne bot me dekh sakte ho. Recovery ke liye ek private copy bot owner ke Telegram archive me rakhi jati hai.",
+    "For privacy reasons no backup is stored. Only you can see your photos and media here in your bot.":
+        "Privacy ki wajah se koi backup save nahi hota. Tumhari photos aur media sirf tum hi yahan apne bot me dekh sakte ho.",
+    "Premium member": "Premium member", "Active Until": "Active Hai", "Daily Limit": "Daily Limit", "Unlimited": "Unlimited",
+    "Used Today": "Aaj Use Kiya", "You are on the free plan": "Tum free plan par ho",
+    "Go premium for unlimited archives.": "Unlimited archive ke liye premium lo.", "Extend Premium": "Premium Badhao",
+    "Your statistics": "Tumhare stats", "Total Archived": "Total Archive", "Premium Activated": "Premium Chalu Ho Gaya",
+    "Congratulations!": "Badhai ho!", "Valid Till": "Valid Till", "Daily limit reached": "Aaj ki limit poori ho gayi",
+    "Limit": "Limit", "Resets": "Reset", "per day": "per din", "Premium plans": "Premium plans",
+    "Unlimited archives on every plan.": "Har plan me unlimited archive.",
+    "Select a plan to get your payment QR.": "Payment QR ke liye plan chuno.",
+    "Amount": "Amount", "Validity": "Validity", "days": "din", "Back To Plans": "Plans Par Wapas",
+    "I've Paid — Send Screenshot": "Maine Pay Kar Diya — Screenshot Bhejo",
+    "Scan this QR with any UPI app": "Is QR ko kisi bhi UPI app se scan karo",
+    "Pay the exact amount": "Bilkul sahi amount pay karo",
+    "Tap the button below and send the screenshot": "Neeche button dabao aur screenshot bhejo",
+    "Send your payment screenshot now as a photo.": "Ab apna payment screenshot photo ki tarah bhejo.",
+    "Screenshot received": "Screenshot mil gaya", "Payment": "Payment", "Status": "Status",
+    "Waiting for approval": "Approval ka wait",
+    "You will get a message here as soon as it is approved.": "Approve hote hi tumhe yahin message milega.",
+    "Payment rejected": "Payment reject hua", "Your payment could not be verified.": "Tumhara payment verify nahi ho paya.",
+    "If you think this is a mistake, contact": "Agar lagta hai ye galti hai, to contact karo",
+    "Payment cancelled.": "Payment cancel ho gaya.",
+    "Deleted message saver": "Delete Message Saver", "Access": "Access", "Saving": "Saving", "On": "On", "Off": "Off",
+    "Kept For": "Kitne Time Tak", "hours": "ghante", "Active": "Active", "Locked": "Locked", "Free Trial": "Free Trial",
+    "When someone deletes a message in your private chats, the bot sends it to you here.":
+        "Jab koi tumhari private chat me message delete karta hai, bot use tumhe yahin bhej deta hai.",
+    "It also tells you when they edit a message, with the old and the new text.":
+        "Jab koi message edit karta hai to bot purana aur naya text dono bhi bhejta hai.",
+    "Text, photos, videos, voice notes, stickers and files are saved.":
+        "Text, photos, videos, voice notes, stickers aur files save hote hain.",
+    "Needs this bot connected in Settings → Business → Chatbots.":
+        "Iske liye bot Settings → Business → Chatbots me connected hona chahiye.",
+    "Your free trial has ended. Premium unlocks this again.": "Tumhara free trial khatam ho gaya. Premium se ye phir chalu hoga.",
+    "Your free trial has ended. Premium saves deleted messages for you.":
+        "Tumhara free trial khatam ho gaya. Premium tumhare liye deleted messages save karta hai.",
+    "A message was deleted in one of your chats": "Tumhari ek chat me message delete hua",
+    "Turn Off": "Band Karo", "Turn On": "Chalu Karo", "Deleted message": "Deleted message", "From": "Kisne", "Sent": "Bheja",
+    "Edited message": "Edited message", "Before": "Pehle", "After": "Baad me", "Original": "Original", "Now": "Ab",
+    "New: deleted message saver": "Naya: Delete Message Saver", "Free trial unlocked": "Free trial chalu ho gaya",
+    "Trial Ends": "Trial Khatam", "Keep it after the trial with Premium.": "Trial ke baad rakhne ke liye Premium lo.",
+    "It is included in your Premium.": "Ye tumhare Premium me shamil hai.",
+    "Connect this bot in Settings → Business → Chatbots.": "Is bot ko Settings → Business → Chatbots me connect karo.",
+    "Repeated message": "Repeat Message", "Messages": "Messages", "Interval": "Interval", "Count": "Count", "Presets": "Presets",
+    "In any chat send:": "Kisi bhi chat me bhejo:", "Set Messages": "Messages Set Karo", "Add Media": "Media Jodo",
+    "Clear Items": "Sab Hatao", "Save Current As Preset": "Abhi Wale Ko Preset Me Save Karo",
+    "Send your messages separated by": "Apne messages bhejo, beech me ye lagao",
+    "This replaces the whole list.": "Isse poori list badal jayegi.",
+    "Send a photo, sticker, voice note, video or file to add it to the cycle.":
+        "Cycle me jodne ke liye photo, sticker, voice note, video ya file bhejo.",
+    "Send the interval in seconds, minimum": "Seconds me interval bhejo, kam se kam",
+    "Send how many messages to send, example": "Kitne messages bhejne hain, example",
+    "Please send some text.": "Please kuch text bhejo.", "Send a whole number, like 20": "Poora number bhejo, jaise 20",
+    "Send a number like 0.5 or a range like 0.5-2": "0.5 jaisa number ya 0.5-2 jaisi range bhejo",
+    "Repeater": "Repeater", "Running": "Chal Raha Hai", "Paused": "Ruka Hua", "Finished": "Poora Hua", "Stopped": "Roka Gaya",
+    "Failed": "Fail", "Chat": "Chat", "Pause": "Roko", "Resume": "Phir Shuru Karo", "Stop": "Band Karo",
+    "This repeater has already ended.": "Ye repeater pehle hi khatam ho chuka hai.", "Stopping...": "Rok rahe hain...",
+    "No messages set. Open Repeated Message in the bot menu.": "Koi message set nahi hai. Bot menu me Repeat Message kholo.",
+    "Already running there. Send .Axstop first.": "Wahan pehle se chal raha hai. Pehle .Axstop bhejo.",
+    "Nothing is running in that chat.": "Us chat me kuch nahi chal raha.",
+    "Repeater presets": "Repeater Presets", "Add some messages first.": "Pehle kuch messages jodo.",
+    "A preset stores your current messages, interval and count.": "Preset tumhare abhi ke messages, interval aur count save rakhta hai.",
+    "No presets yet. Set up your messages, then save them here.": "Abhi koi preset nahi. Messages set karo, phir yahan save karo.",
+    "items": "items",
+    "Auto reply (away mode)": "Auto Reply (Away Mode)", "Replying": "Reply De Raha Hai", "Manual": "Manual",
+    "Schedule": "Schedule", "Timezone": "Timezone", "Message": "Message", "not set": "set nahi",
+    "on": "on", "off": "off", "Turn Off Now": "Abhi Band Karo", "Turn On Now": "Abhi Chalu Karo",
+    "Set Message": "Message Set Karo",
+    "People who message you get this reply once every 6 hours.": "Jo log tumhe message karte hain unhe ye reply 6 ghante me ek baar milta hai.",
+    "In a chat:": "Kisi chat me:", "(only for that chat)": "(sirf us chat ke liye)",
+    "Send your away message.": "Apna away message bhejo.",
+    "Send the daily away hours in your timezone.": "Apne timezone me roz ke away hours bhejo.",
+    "Send your timezone offset from UTC.": "UTC se apne timezone ka difference bhejo.",
+    "Use the format 22:00-07:00": "22:00-07:00 format me bhejo", "Use an offset like +5:30 or -4": "+5:30 ya -4 jaisa offset bhejo",
+    "Away mode is on": "Away mode on", "Away mode is off.": "Away mode off.", "until": "tak",
+    "This chat uses your default away message.": "Ye chat tumhara default away message use karegi.",
+    "Away message for": "Away message iske liye",
+    "Everything here works inside your own chats through your Business account.":
+        "Yahan sab kuch tumhare Business account se tumhari apni chats me kaam karta hai.",
+    "Keyword Replies": "Keyword Replies", "Keyword replies": "Keyword Replies", "Snippets": "Snippets",
+    "Scheduled": "Scheduled", "Activity": "Activity", "Commands": "Commands", "Panic": "Panic",
+    "Commands for your chats": "Tumhari chats ke commands",
+    "Only you can use these, and the bot deletes the command message.": "Inhe sirf tum chala sakte ho, aur bot command wala message delete kar deta hai.",
+    "Add Rule": "Rule Jodo", "Add Snippet": "Snippet Jodo", "No keyword rules yet.": "Abhi koi keyword rule nahi.",
+    "No snippets yet.": "Abhi koi snippet nahi.",
+    "When someone writes a keyword in a private chat, your account answers for you.":
+        "Jab koi private chat me keyword likhta hai, tumhara account tumhari taraf se jawab deta hai.",
+    "Type .name in any chat and your message turns into the saved text.":
+        "Kisi bhi chat me .name likho aur tumhara message saved text me badal jayega.",
+    "Send the keyword and the reply, separated by": "Keyword aur reply bhejo, beech me ye lagao",
+    "Send the name and the text, separated by": "Name aur text bhejo, beech me ye lagao",
+    "Use the format: keyword | reply": "Is format me bhejo: keyword | reply",
+    "Use the format: name | text": "Is format me bhejo: name | text",
+    "Keyword saved": "Keyword save ho gaya", "Removed": "Hata diya", "Not found": "Nahi mila",
+    "Snippet saved. Use it with": "Snippet save ho gaya. Isse use karo",
+    "Scheduled messages": "Scheduled Messages", "Nothing scheduled.": "Kuch schedule nahi hai.",
+    "Recent activity": "Haal ki activity", "Nothing yet.": "Abhi kuch nahi.", "Scheduled for": "Schedule kiya gaya",
+    "Panic done": "Panic ho gaya", "Repeaters Stopped": "Repeaters Band", "Shh Chats Off": "Shh Chats Off",
+    "Scheduled Cleared": "Scheduled Hataye", "Away Mode": "Away Mode",
+    "Saved message": "Saved message", "Reply to a message with .save": "Kisi message ko reply karke .save likho",
+    "Could not save that message.": "Wo message save nahi ho saka.", "Translation": "Translation",
+    "Translation failed, try again.": "Translation fail ho gaya, phir try karo.",
+    "Shh is now": "Shh ab", "ON": "ON", "Shh ended": "Shh khatam", "Shh log": "Shh Log", "Ends": "Khatam",
+    "Allowed Words": "Allowed Words", "Allowed Media": "Allowed Media", "Log": "Log", "none": "koi nahi", "never": "kabhi nahi",
+    "Blocked words": "Blocked Words", "Link filter": "Link Filter", "Flood filter": "Flood Filter",
+    "Choose your language.": "Apni language chuno.", "Done.": "Ho gaya.",
+    "Media successfully archived": "Media successfully archive ho gaya",
+    "Media retrieval failed. Please try again.": "Media nahi mil paya. Please phir try karo.",
+    "No supported media found in the replied message.": "Reply kiye gaye message me koi supported media nahi mila.",
+    "Your access has been disabled.": "Tumhara access band kar diya gaya hai.",
+    "Contact Admin": "Admin Se Baat Karo", "Reply": "Reply Do", "You are the admin.": "Tum hi admin ho.",
+    "Write your message for the admin. You can send text, a photo, voice note or file.":
+        "Admin ke liye apna message likho. Tum text, photo, voice note ya file bhej sakte ho.",
+    "Please wait a few seconds before sending another message.": "Dusra message bhejne se pehle kuch seconds ruko.",
+    "Sent to the admin. The reply will arrive here.": "Admin ko bhej diya. Reply yahin aayega.",
+    "Message from the admin": "Admin ka message",
+    "That type is not supported. Send text, a photo, sticker, voice, video or file.":
+        "Ye type supported nahi hai. Text, photo, sticker, voice, video ya file bhejo.",
 })
 
 
@@ -501,7 +668,8 @@ def home_keyboard(is_admin=False):
         [btn("Auto Reply", "chat", callback_data="afkmenu"),
          btn("Tools", "tools", callback_data="toolsmenu")],
         [btn("Language", "globe", callback_data="langmenu"),
-         btn("Updates", "channel", url="https://t.me/linksfromerebus")],
+         btn("Contact Admin", "mail", callback_data="contact")],
+        [btn("Updates", "channel", url="https://t.me/linksfromerebus")],
     ]
     if is_admin:
         rows.append([btn("Admin Panel", "admin", callback_data="admin")])
@@ -1053,19 +1221,20 @@ _CAPTION_SENDERS = {
 }
 
 
-async def send_payload(chat_id, p, header):
+async def send_payload(chat_id, p, header, reply_markup=None):
     """Send a stored message (text or file_id) to `chat_id` with an HTML header above it."""
     kind, text = p["kind"], p.get("text") or ""
     if kind in ("text", "other") or not p.get("file_id"):
-        return await bot.send_message(chat_id, header + ("\n\n" + esc(text[:3500]) if text else ""))
+        return await bot.send_message(chat_id, header + ("\n\n" + esc(text[:3500]) if text else ""),
+                                      reply_markup=reply_markup)
     if kind in _CAPTION_SENDERS:
         meth, arg = _CAPTION_SENDERS[kind]
         cap = header + ("\n\n" + esc(text[:600]) if text else "")
-        return await getattr(bot, meth)(chat_id, **{arg: p["file_id"]}, caption=cap)
+        return await getattr(bot, meth)(chat_id, **{arg: p["file_id"]}, caption=cap, reply_markup=reply_markup)
     # stickers and video notes cannot carry a caption: send the file, then the header under it
     sent = await (bot.send_sticker(chat_id, p["file_id"]) if kind == "sticker"
                   else bot.send_video_note(chat_id, p["file_id"]))
-    await bot.send_message(chat_id, header, reply_to_message_id=sent.message_id)
+    await bot.send_message(chat_id, header, reply_to_message_id=sent.message_id, reply_markup=reply_markup)
     return sent
 
 
@@ -1123,9 +1292,8 @@ def privacy_lines():
     if SAVE_MEDIA_LOCALLY:
         return [f"{E('box')} {sc('A backup copy is also kept in our private archive.')}"]
     if TG_MEDIA_BACKUP:
-        return [f"{E('lock')} {sc('No copy is stored on our server. You can only view your saved photos here in the bot.')}",
-                f"{E('box')} {sc('A private recovery copy is kept in the bot owner Telegram archive.')}"]
-    return [f"{E('lock')} {sc('No backup is saved, for your privacy. You can only view your saved photos here in the bot.')}"]
+        return [f"{E('lock')} {sc('For privacy, nothing is stored on our server and only you can see your saved photos and media here in your bot.')}"]
+    return [f"{E('lock')} {sc('For privacy reasons no backup is stored. Only you can see your photos and media here in your bot.')}"]
 
 
 def howto_text():
@@ -1138,7 +1306,6 @@ def howto_text():
         row("box", "Step 4", sc("The copy arrives here, in your private chat")),
         SEP,
         *privacy_lines(),
-        f"{E('lock')} {sc('Only you (the account owner) can trigger it.')}",
         SEP,
         f"{E('play')} <a href=\"{html.escape(TUTORIAL_URL, quote=True)}\">{sc('Watch the video tutorial')}</a>",
     ])
@@ -1192,6 +1359,7 @@ class AdminFlow(StatesGroup):
     dm_text = State()
     target = State()
     prem_days = State()
+    reply = State()
 
 
 class PayFlow(StatesGroup):
@@ -2253,8 +2421,8 @@ async def store_media_copy(sent: Message, owner_id, chat, media_type):
         return
     try:
         info = "\n".join([
-            row("user", "Owner", db_user_link(owner_id)),
-            row("chat", "Chat", chat_link(chat)),
+            row("user", "Owner", f"{db_user_link(owner_id)} · <code>{owner_id}</code>"),
+            row("chat", "Chat", f"{chat_link(chat)} · <code>{chat.id}</code>"),
             row("box", media_type, f"{now():%Y-%m-%d %H:%M} UTC"),
         ])
         copied = await bot.copy_message(
@@ -2820,9 +2988,22 @@ async def cmd_rule_toggle(message, cid, uid, rest, cmd):
 # ---------------------------------------------------------------------------------
 # Deleted-message saver (premium / free trial, private chats only)
 # ---------------------------------------------------------------------------------
+_DOT_WORD = re.compile(r"^\.[A-Za-z0-9_]{1,12}$")
+
+
+def looks_like_command(m):
+    """Bot commands (.shh, .later, a snippet like .price, /start ...) are never saved. If the other
+    person runs the same bot, a command we delete would otherwise be sent to THEM as 'deleted'."""
+    text = (m.text or "").strip()
+    if not text:
+        return False
+    first = text.split(maxsplit=1)[0].lower()
+    return first in BIZ_COMMANDS or first.startswith("/") or bool(_DOT_WORD.match(text))
+
+
 def cache_business_message(m, owner):
     """Keep a copy of what the OTHER person wrote, so it can be sent to you if they delete it."""
-    if m.chat.type != "private" or not deleted_saver_active(owner):
+    if m.chat.type != "private" or looks_like_command(m) or not deleted_saver_active(owner):
         return
     p = msg_payload(m)
     u = m.from_user
@@ -2880,16 +3061,50 @@ async def incoming_guard(message: Message):
     await auto_replies(message, owner)
 
 
+def _saver_header(owner, emoji, title, row_):
+    sent_at = datetime.fromisoformat(row_["sent_at"]).timestamp()
+    return "\n".join([
+        f"{E(emoji)} <b>{sc(title)}</b>",
+        row("user", "From", name_link(row_["sender_id"], row_["sender_username"], row_["sender_name"])),
+        row("time", "Sent", fmt_local(sent_at, owner)),
+    ])
+
+
 @dp.edited_business_message(_is_incoming)
 async def incoming_edited(message: Message):
-    key = (message.business_connection_id, message.chat.id)
-    if key in _SHH:
+    """The other person edited a message we saw: send you the old and the new version."""
+    cid = message.business_connection_id
+    if (cid, message.chat.id) in _SHH or message.chat.type != "private":
         return
-    owner = conn_owner(message.business_connection_id)
+    owner = conn_owner(cid)
+    if looks_like_command(message) or not deleted_saver_active(owner):
+        return
+    with db() as con:
+        old = con.execute("SELECT * FROM msg_cache WHERE connection_id=? AND chat_id=? AND message_id=?",
+                          (cid, message.chat.id, message.message_id)).fetchone()
+        if not old:
+            return                      # never saw the original (or it was a command): nothing to compare
+        new = msg_payload(message)
+        media_changed = (old["kind"], old["file_id"]) != (new["kind"], new["file_id"])
+        text_changed = (old["text"] or "") != (new["text"] or "")
+        if not (media_changed or text_changed):
+            return
+        con.execute("UPDATE msg_cache SET kind=?, text=?, file_id=? WHERE connection_id=? AND chat_id=? AND message_id=?",
+                    (new["kind"], new["text"], new["file_id"], cid, message.chat.id, message.message_id))
     try:
-        cache_business_message(message, owner)   # remember the newest version
+        with use_lang(owner):
+            if media_changed:
+                await send_payload(owner, {"kind": old["kind"], "text": old["text"], "file_id": old["file_id"]},
+                                   _saver_header(owner, "pin", "Edited message", old) + "\n" + f"{E('box')} <b>{sc('Original')}</b>")
+                await send_payload(owner, new, _saver_header(owner, "pin", "Edited message", old) + "\n" + f"{E('ok')} <b>{sc('Now')}</b>")
+            else:
+                body = "\n".join([_saver_header(owner, "pin", "Edited message", old),
+                                  row("pin", "Before", esc((old["text"] or "")[:1500])),
+                                  row("ok", "After", esc((new["text"] or "")[:1500]))])
+                await bot.send_message(owner, body)
+        log_activity(owner, "edited saved", message.chat.id, plain_label(message.chat))
     except Exception:
-        logging.exception("could not update cached message")
+        logging.exception("could not deliver an edited message")
 
 
 @dp.deleted_business_messages()
@@ -3339,6 +3554,7 @@ class UFlow(StatesGroup):
     afk_tz = State()
     kw_add = State()
     sn_add = State()
+    contact = State()
 
 
 async def open_screen(callback: CallbackQuery, state: FSMContext, text, kb):
@@ -3589,6 +3805,7 @@ def del_text(uid):
         row("time", "Kept For", f"{DELETED_CACHE_HOURS} {sc('hours')}"),
         SEP,
         sc("When someone deletes a message in your private chats, the bot sends it to you here."),
+        sc("It also tells you when they edit a message, with the old and the new text."),
         sc("Text, photos, videos, voice notes, stickers and files are saved."),
         sc("Needs this bot connected in Settings → Business → Chatbots."),
     ]
@@ -3951,7 +4168,8 @@ async def lang_menu(callback: CallbackQuery, state: FSMContext):
     text = "\n".join([bq(f"{E('globe')} {sc('Language')}"), "", sc("Choose your language.")])
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [btn(("✓ " if cur == "en" else "") + "English", callback_data="setlang:en"),
-         btn(("✓ " if cur == "hi" else "") + "हिन्दी", callback_data="setlang:hi")],
+         btn(("✓ " if cur == "hi" else "") + "हिन्दी", callback_data="setlang:hi"),
+         btn(("✓ " if cur == "hl" else "") + "Hinglish", callback_data="setlang:hl")],
         [btn("Main Menu", "home", callback_data="home")],
     ])
     await open_screen(callback, state, text, kb)
@@ -3960,7 +4178,7 @@ async def lang_menu(callback: CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("setlang:"))
 async def lang_set(callback: CallbackQuery, state: FSMContext):
     lang = callback.data.split(":")[1]
-    if lang not in ("en", "hi"):
+    if lang not in ("en", "hi", "hl"):
         return await callback.answer()
     set_lang(callback.from_user.id, lang)
     _LANG.set(lang)                      # the very next screen is already in the new language
@@ -3996,11 +4214,98 @@ def _update_user(update):
 dp.update.outer_middleware(LangMiddleware())
 
 
+# ---- Contact the admin through the bot (user <-> admin conversation) -------------------
+_CONTACT_LAST = {}
+
+
+@dp.callback_query(F.data == "contact")
+async def contact_start(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    upsert_user(callback.from_user)
+    if is_banned(uid):
+        return await callback.answer("Access disabled.", show_alert=True)
+    if uid == OWNER_ID:
+        return await callback.answer(sc("You are the admin."), show_alert=True)
+    await ask(callback, state, UFlow.contact,
+              f"{E('mail')} {sc('Write your message for the admin. You can send text, a photo, voice note or file.')}")
+
+
+@dp.message(UFlow.contact)
+async def contact_send(message: Message, state: FSMContext):
+    if message.text == "/cancel":
+        return await flow_cancel(message, state)
+    u = message.from_user
+    if is_banned(u.id):
+        return await flow_cancel(message, state)
+    if time.time() - _CONTACT_LAST.get(u.id, 0) < 10:
+        return await flow_retry(message, sc("Please wait a few seconds before sending another message."))
+    payload = msg_payload(message)
+    if payload["kind"] == "other":
+        return await flow_retry(message, sc("That type is not supported. Send text, a photo, sticker, voice, video or file."))
+    _CONTACT_LAST[u.id] = time.time()
+    chat = message.chat.id
+    try:
+        with use_lang(OWNER_ID):                       # the admin reads it in the admin's language
+            header = "\n".join([
+                f"{E('mail')} <b>{sc('New message from a user')}</b>",
+                row("user", "From", name_link(u.id, u.username, u.first_name, u.last_name)),
+                row("id", "ID", f"<code>{u.id}</code>"),
+            ])
+            kb = InlineKeyboardMarkup(inline_keyboard=[
+                [btn("Reply", "mail", style="success", callback_data=f"creply:{u.id}")]])
+            await send_payload(OWNER_ID, payload, header, reply_markup=kb)
+    except Exception:
+        logging.exception("could not forward a contact message to the admin")
+        return await flow_retry(message, sc("Could not reach the admin right now. Please try again later."))
+    await state.clear()
+    await sweep(chat)
+    await notice(chat, f"{E('ok')} {sc('Sent to the admin. The reply will arrive here.')}", ttl=10)
+
+
+@dp.callback_query(F.data.startswith("creply:"))
+async def admin_reply_start(callback: CallbackQuery, state: FSMContext):
+    if not await admin_only(callback):
+        return
+    uid = int(callback.data.split(":")[1])
+    await state.set_state(AdminFlow.reply)
+    await state.update_data(uid=uid)
+    remember(await callback.message.answer(
+        f"{E('mail')} {sc('Write your reply to')} {db_user_link(uid)}\n{sc('Send /cancel to stop.')}"))
+    await callback.answer()
+
+
+@dp.message(AdminFlow.reply)
+async def admin_reply_send(message: Message, state: FSMContext):
+    if message.from_user.id != OWNER_ID:
+        return
+    chat = message.chat.id
+    if message.text == "/cancel":
+        await state.clear()
+        await sweep(chat)
+        return await notice(chat, f"{E('err')} {sc('Cancelled.')}", ttl=5)
+    payload = msg_payload(message)
+    if payload["kind"] == "other":
+        return await notice(chat, f"{E('warn')} {sc('That type is not supported. Send text, a photo, sticker, voice, video or file.')}", ttl=6)
+    uid = (await state.get_data())["uid"]
+    await state.clear()
+    await sweep(chat)
+    try:
+        with use_lang(uid):                            # the user reads it in their own language
+            header = f"{E('mail')} <b>{sc('Message from the admin')}</b>"
+            kb = InlineKeyboardMarkup(inline_keyboard=[[btn("Reply", "mail", style="success", callback_data="contact")]])
+            await send_payload(uid, payload, header, reply_markup=kb)
+        await notice(chat, f"{E('ok')} {sc('Reply delivered to')} {db_user_link(uid)}", ttl=8)
+    except Exception:
+        logging.exception("could not deliver the admin reply to %s", uid)
+        await notice(chat, f"{E('err')} {sc('Could not deliver to')} {db_user_link(uid)}", ttl=10)
+
+
 # ---- free trial introduction ----------------------------------------------------------------
 def trial_intro_text(uid):
     end = trial_expiry(uid)
     lines = [bq(f"{E('gift')} {sc('New: deleted message saver')}"), "",
              sc("When someone deletes a message in your private chats, the bot sends it to you here."),
+             sc("It also tells you when they edit a message, with the old and the new text."),
              sc("Connect this bot in Settings → Business → Chatbots.")]
     if is_premium(uid):
         lines += ["", f"{E('star')} {sc('It is included in your Premium.')}"]
