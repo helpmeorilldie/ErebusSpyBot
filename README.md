@@ -41,7 +41,7 @@ Telegram Business bot · Archive · Deleted-message saver · Repeater · Auto-re
 | Area | What you get |
 |---|---|
 | 📸 **Archive** | Reply to any media with `shit` in any chat and the copy lands in your bot chat. Photos, videos, GIFs, files, video notes |
-| 🗑 **Deleted-message saver** | When someone deletes a message in your private chats, the bot sends it to you. Premium feature with a **3-day free trial** for everyone |
+| 🗑 **Deleted & edited messages** | When someone deletes **or edits** a message in your private chats, the bot sends it to you (old and new text). Premium feature with a **3-day free trial** for everyone |
 | ⚡ **Repeater** | Repeat messages, photos, stickers or voice notes. Presets, random delay, pause / resume, live progress |
 | 🔇 **Shh mode** | Instantly deletes what the *other person* sends in one chat. Timers, allow-lists, optional log |
 | 💬 **Auto reply** | Away mode with schedule, per-chat messages and keyword replies |
@@ -52,7 +52,8 @@ Telegram Business bot · Archive · Deleted-message saver · Repeater · Auto-re
 | 💳 **Payments** | UPI QR generated in the bot, screenshot goes to the owner, one-tap approve |
 | 🛠 **Admin panel** | Statistics, **revenue**, paged **all-users list**, user info by `@username` or ID, give / remove premium, ban, broadcast |
 | 💾 **Backups** | Database auto-backed up to Telegram and restored automatically after a host crash |
-| 🌐 **Languages** | English and Hindi menus |
+| 🌐 **Languages** | English, हिन्दी and Hinglish menus |
+| 📨 **Contact admin** | Users message the admin through the bot, the admin replies with one tap, and the user can reply back |
 | 🎨 **UI** | Small-caps font, animated custom emojis (plain fallback), self-cleaning chat |
 
 ---
@@ -155,7 +156,8 @@ Settings are read from `.env` (or environment variables). The options marked ✏
 | Deleted Messages | Deleted-message saver status, on / off |
 | Auto Reply | Away mode, schedule, timezone |
 | Tools | Keyword replies, snippets, scheduled messages, activity log, commands, panic |
-| Language | English or हिन्दी |
+| Language | English, हिन्दी or Hinglish |
+| Contact Admin | Send a message (text, photo, voice, file) to the admin and get the reply in the bot |
 
 ---
 
@@ -206,9 +208,11 @@ Minimum interval is **0.1 s**. The cycle can contain text, photos, stickers, voi
 
 ---
 
-## 🗑 Deleted-message saver & free trial
+## 🗑 Deleted & edited message saver, and free trial
 
 - Saves what the **other person** sent in your **private chats** (text, photos, videos, voice notes, stickers, files) and sends it to you in the bot the moment they delete it.
+- If they **edit** a message, you get the old and the new version.
+- **Bot commands are never saved** (`.shh`, `.later`, snippets, `/start`...), so if the other person runs this bot too, your commands don't show up as "deleted" for them.
 - Needs the bot connected under **Settings → Business → Chatbots**.
 - **Premium feature**, but **every user gets a 3-day free trial**. New users start the trial when they join, existing users when the update goes live. Everyone is told about it once.
 - Copies are kept for `DELETED_CACHE_HOURS` (72 by default), then removed. Turn the saver off any time from **Deleted Messages**.
@@ -251,6 +255,7 @@ Open it with the **Admin Panel** button on the main menu (owner only).
 | Give / Remove Premium | Extend or remove premium with a few taps |
 | Ban User / Unban User | Block or unblock |
 | Broadcast / Message One User | Message everyone or one person |
+| Reply (on a user message) | Users write to you with **Contact Admin**. Tap **Reply** under their message, type your answer, and it is delivered to them with a Reply button for the next turn |
 
 | Command | What it does |
 |---|---|
@@ -272,7 +277,7 @@ Every user command accepts an `@username` **or** a numeric ID. A person must hav
 
 - By default files are **temporary**: downloaded, handed to the owner, copied to the Telegram backup channel, then **deleted from the server**.
 - Set `SAVE_MEDIA_LOCALLY=1` to also keep them in `./saved_media`.
-- The backup-channel caption names the owner and chat by **@username**, or by profile name as a tap-to-open link when there is no username.
+- The backup-channel caption names the owner and chat by **@username** (or by profile name as a tap-to-open link when there is no username), followed by their numeric ID.
 - The privacy text shown in **How To Archive** always matches your settings: if you turn off both `TG_MEDIA_BACKUP` and `SAVE_MEDIA_LOCALLY` it says *"No backup is saved, for your privacy. You can only view your saved photos here in the bot."*
 
 **Database backups**
