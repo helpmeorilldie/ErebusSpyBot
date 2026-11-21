@@ -88,6 +88,8 @@ TEMP_DIR = Path(tempfile.gettempdir()) / "erebus_tmp_media"
 if SAVE_MEDIA_LOCALLY:
     SAVE_DIR.mkdir(exist_ok=True)
 TRIGGER_WORD = "shit"
+MAX_TRIGGERS = 3                                     # custom archive commands per user (premium)
+TRIGGER_TRIAL_DAYS = int(os.getenv("TRIGGER_TRIAL_DAYS", "7"))
 
 TUTORIAL_URL = "https://youtube.com/shorts/KRKAUY3g7wk?si=G5eeDrXGJ5ZGfX5v"
 
@@ -96,10 +98,10 @@ TRIAL_DAYS = 3
 DELETED_CACHE_HOURS = int(os.getenv("DELETED_CACHE_HOURS", "72"))   # how long copies are kept
 ANNOUNCE_TRIAL_ON_START = os.getenv("ANNOUNCE_TRIAL_ON_START", "1") == "1"
 
-# Payments (UPI). PLANS = {months: (days of premium, price in INR)}
+# Payments (UPI). PLANS = {plan: (days of premium, price in INR)}
 UPI_ID = os.getenv("UPI_ID", "Ahmadammar@fam")
 UPI_NAME = os.getenv("UPI_NAME", "Erebus Premium")
-PLANS = {1: (30, 29), 2: (60, 39), 3: (90, 49)}
+PLANS = {1: (7, 29), 2: (14, 39), 3: (30, 49)}
 MAX_PENDING_PAYMENTS = 3  # per user, stops screenshot spam
 
 # Animated / custom emojis (optional). IDs are stored in this file, see /emojis.
@@ -297,6 +299,30 @@ HI.update({
         "मीडिया नहीं मिल सका। कृपया दोबारा कोशिश करें।",
     "No supported media found in the replied message.": "रिप्लाई किए गए मैसेज में कोई सपोर्टेड मीडिया नहीं मिला।",
     "Your access has been disabled.": "आपका एक्सेस बंद कर दिया गया है।",
+    # custom commands + calls
+    "Trigger Words": "ट्रिगर शब्द", "Custom commands": "कस्टम कमांड", "Custom command": "कस्टम कमांड",
+    "Call history": "कॉल हिस्ट्री", "Call": "कॉल", "Type": "टाइप", "Duration": "अवधि",
+    "Default": "डिफ़ॉल्ट", "Custom": "कस्टम", "Slots": "स्लॉट", "Add Command": "कमांड जोड़ें", "Remove": "हटाएँ",
+    "Send the word to archive with.": "आर्काइव करने के लिए शब्द भेजें।",
+    "Letters, numbers or _ only.": "सिर्फ़ अक्षर, संख्या या _ भेजें।",
+    "Letters, numbers or _ only, max 24 characters.": "सिर्फ़ अक्षर, संख्या या _, ज़्यादा से ज़्यादा 24 अक्षर।",
+    "That is already the default word, pick another.": "यह पहले से डिफ़ॉल्ट शब्द है, दूसरा चुनें।",
+    "Reply to any media with one of these words and the copy arrives here.":
+        "किसी भी मीडिया को इनमें से किसी शब्द से रिप्लाई करें और कॉपी यहाँ आ जाएगी।",
+    "The default word always works, custom ones are a premium feature.":
+        "डिफ़ॉल्ट शब्द हमेशा काम करता है, कस्टम शब्द प्रीमियम फ़ीचर है।",
+    "Your 7 day trial has ended. Premium unlocks custom commands.":
+        "आपका 7 दिन का ट्रायल खत्म हो गया। प्रीमियम से कस्टम कमांड चालू होगा।",
+    "Your trial has ended. Premium unlocks custom commands.":
+        "आपका ट्रायल खत्म हो गया। प्रीमियम से कस्टम कमांड चालू होगा।",
+    "New: custom archive commands": "नया: कस्टम आर्काइव कमांड",
+    "You can archive media with your own words now, up to": "अब आप अपने शब्दों से मीडिया आर्काइव कर सकते हैं, कुल",
+    "Reply to any media with your word, exactly like the default one.":
+        "किसी भी मीडिया को अपने शब्द से रिप्लाई करें, बिल्कुल डिफ़ॉल्ट शब्द की तरह।",
+    "7 day free trial unlocked": "7 दिन का फ्री ट्रायल चालू हो गया",
+    "Every call in your connected chats is recorded here automatically.":
+        "आपकी जुड़ी हुई चैट्स की हर कॉल यहाँ अपने आप रिकॉर्ड होती है।",
+    "Call history is off for you.": "आपके लिए कॉल हिस्ट्री बंद है।",
 })
 
 
@@ -458,6 +484,29 @@ HL.update({
     "Message from the admin": "Admin ka message",
     "That type is not supported. Send text, a photo, sticker, voice, video or file.":
         "Ye type supported nahi hai. Text, photo, sticker, voice, video ya file bhejo.",
+    "Trigger Words": "Trigger Words", "Custom commands": "Custom Commands", "Custom command": "Custom Command",
+    "Call history": "Call History", "Call": "Call", "Type": "Type", "Duration": "Duration",
+    "Default": "Default", "Custom": "Custom", "Slots": "Slots", "Add Command": "Command Jodo", "Remove": "Hatao",
+    "Send the word to archive with.": "Archive karne ke liye word bhejo.",
+    "Letters, numbers or _ only.": "Sirf letters, numbers ya _ bhejo.",
+    "Letters, numbers or _ only, max 24 characters.": "Sirf letters, numbers ya _, max 24 characters.",
+    "That is already the default word, pick another.": "Ye pehle se default word hai, dusra chuno.",
+    "Reply to any media with one of these words and the copy arrives here.":
+        "Kisi bhi media ko inme se kisi word se reply karo aur copy yahin aa jayegi.",
+    "The default word always works, custom ones are a premium feature.":
+        "Default word hamesha chalta hai, custom words premium feature hai.",
+    "Your 7 day trial has ended. Premium unlocks custom commands.":
+        "Tumhara 7 din ka trial khatam ho gaya. Premium se custom commands chalu hoga.",
+    "Your trial has ended. Premium unlocks custom commands.":
+        "Tumhara trial khatam ho gaya. Premium se custom commands chalu hoga.",
+    "New: custom archive commands": "Naya: Custom Archive Commands",
+    "You can archive media with your own words now, up to": "Ab tum apne words se media archive kar sakte ho, total",
+    "Reply to any media with your word, exactly like the default one.":
+        "Kisi bhi media ko apne word se reply karo, bilkul default word ki tarah.",
+    "7 day free trial unlocked": "7 din ka free trial chalu ho gaya",
+    "Every call in your connected chats is recorded here automatically.":
+        "Tumhari connected chats ki har call yahan apne aap record hoti hai.",
+    "Call history is off for you.": "Tumhare liye call history band hai.",
 })
 
 
@@ -718,6 +767,8 @@ def admin_keyboard():
 # payments              UPI payment requests (pending / approved / rejected)
 # processed_messages    stops the same trigger being handled twice
 # broadcasts            admin broadcast history
+# triggers              custom archive commands per user (premium)
+# call_log              recorded calls from the connected chats
 # All timestamps are UTC ISO strings; "day" is a UTC YYYY-MM-DD string.
 # ----------------------------------------------------------------------------
 @contextmanager
@@ -855,6 +906,22 @@ def init_db():
         );
         CREATE INDEX IF NOT EXISTS idx_activity_user ON activity(user_id, ts);
         CREATE INDEX IF NOT EXISTS idx_conn_owner ON business_connections(owner_id);
+        CREATE TABLE IF NOT EXISTS triggers (
+            user_id INTEGER NOT NULL,
+            word TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            PRIMARY KEY(user_id, word)
+        );
+        CREATE TABLE IF NOT EXISTS call_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            chat_id INTEGER NOT NULL,
+            chat_label TEXT,
+            direction TEXT,
+            duration INTEGER,
+            ts REAL NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_calls_user ON call_log(user_id, ts);
         """)
 
         # Migration: per-user limit column for databases created by older versions.
@@ -881,6 +948,11 @@ def init_db():
         if add_col("users", "trial_until", "TEXT"):
             # everybody who already exists gets the free trial, starting now
             con.execute("UPDATE users SET trial_until=?", ((now() + timedelta(days=TRIAL_DAYS)).isoformat(),))
+        add_col("users", "cmd_notified", "INTEGER NOT NULL DEFAULT 0")
+        if add_col("users", "cmd_trial_until", "TEXT"):
+            # every existing user gets the 7 day custom-command trial, starting now
+            con.execute("UPDATE users SET cmd_trial_until=?",
+                        ((now() + timedelta(days=TRIGGER_TRIAL_DAYS)).isoformat(),))
 
         # Migration: build today's/old counters from the existing archive history.
         con.execute("""
@@ -900,18 +972,19 @@ def today():
 
 # ---- users ------------------------------------------------------------------
 def upsert_user(user):
-    """Create or refresh a user. A brand-new user starts with the free trial."""
+    """Create or refresh a user. A brand-new user starts with the free trials."""
     stamp = now().isoformat()
     trial_end = (now() + timedelta(days=TRIAL_DAYS)).isoformat()
+    cmd_trial_end = (now() + timedelta(days=TRIGGER_TRIAL_DAYS)).isoformat()
     with db() as con:
         con.execute("""
-            INSERT INTO users(user_id, username, first_name, joined_at, last_seen, trial_until)
-            VALUES(?,?,?,?,?,?)
+            INSERT INTO users(user_id, username, first_name, joined_at, last_seen, trial_until, cmd_trial_until)
+            VALUES(?,?,?,?,?,?,?)
             ON CONFLICT(user_id) DO UPDATE SET
               username=excluded.username,
               first_name=excluded.first_name,
               last_seen=excluded.last_seen
-        """, (user.id, user.username, user.first_name, stamp, stamp, trial_end))
+        """, (user.id, user.username, user.first_name, stamp, stamp, trial_end, cmd_trial_end))
 
 
 def get_user(user_id):
@@ -1027,6 +1100,60 @@ def has_pro(user_id):
 def deleted_saver_active(user_id):
     row = get_user(user_id)
     return bool(row and row["save_deleted"] and has_pro(user_id))
+
+
+def cmd_trial_expiry(user_id):
+    """End of the custom-command trial, or None when there is none / it is over."""
+    row = get_user(user_id)
+    if not row or not row["cmd_trial_until"]:
+        return None
+    try:
+        end = datetime.fromisoformat(row["cmd_trial_until"])
+    except ValueError:
+        return None
+    return end if end > now() else None
+
+
+def has_custom_triggers(user_id):
+    """Custom commands: paid premium OR the 7 day trial."""
+    return is_premium(user_id) or cmd_trial_expiry(user_id) is not None
+
+
+def user_triggers(user_id):
+    return _TRIGGERS.get(user_id, set())
+
+
+def trigger_words(user_id):
+    """Every word that archives for this user. The default one always works."""
+    words = {TRIGGER_WORD}
+    if has_custom_triggers(user_id):
+        words |= user_triggers(user_id)
+    return words
+
+
+def add_trigger(user_id, word):
+    word = word.strip().lower()
+    if not re.fullmatch(r"[a-z0-9_]{1,24}", word):
+        return "format"
+    if word == TRIGGER_WORD:
+        return "default"
+    with db() as con:
+        exists = con.execute("SELECT 1 FROM triggers WHERE user_id=? AND word=?", (user_id, word)).fetchone()
+        n = con.execute("SELECT COUNT(*) n FROM triggers WHERE user_id=?", (user_id,)).fetchone()["n"]
+        if not exists and n >= MAX_TRIGGERS:
+            return "limit"
+        con.execute("INSERT INTO triggers(user_id, word, created_at) VALUES(?,?,?) "
+                    "ON CONFLICT(user_id, word) DO NOTHING", (user_id, word, now().isoformat()))
+    _TRIGGERS.setdefault(user_id, set()).add(word)
+    return "ok"
+
+
+def remove_trigger(user_id, word):
+    word = word.lower()
+    with db() as con:
+        n = con.execute("DELETE FROM triggers WHERE user_id=? AND word=?", (user_id, word)).rowcount
+    _TRIGGERS.get(user_id, set()).discard(word)
+    return n
 
 
 def fmt_left(delta):
@@ -1275,6 +1402,7 @@ def home_text(user_id, name):
     limit = user_daily_limit(user_id)
     plan = f"{sc('Premium')} ({expiry:%d %b %Y})" if expiry else sc("Free")
     used = f"{daily_count(user_id)} / {'∞' if limit is None else limit}"
+    words = len(user_triggers(user_id)) + 1
     return "\n".join([
         bq(f"{E('user')} {sc('Welcome')}, {esc(name or 'friend')}"),
         head("title", "Media Archive Bot", " ❗️"),
@@ -1282,6 +1410,7 @@ def home_text(user_id, name):
         row("star", "Plan", plan),
         row("camera", "Today", used),
         row("trash", "Deleted Saver", pro_status_text(user_id)),
+        row("bolt", "Trigger Words", words),
         SEP,
         f"{E('bolt')} {sc('Reply to any media with')} <code>{TRIGGER_WORD}</code>",
     ])
@@ -1410,6 +1539,8 @@ async def start(message: Message, state: FSMContext):
     row_ = get_user(uid)
     if row_ and not row_["trial_notified"]:      # new users (and old ones who missed it) hear about the trial
         await send_trial_intro(uid)
+    if row_ and not row_["cmd_notified"]:
+        await send_trigger_intro(uid)
 
 
 @dp.callback_query(F.data == "checkjoin")
@@ -1428,6 +1559,8 @@ async def check_join(callback: CallbackQuery):
         row_ = get_user(uid)
         if row_ and not row_["trial_notified"]:
             await send_trial_intro(uid)
+        if row_ and not row_["cmd_notified"]:
+            await send_trigger_intro(uid)
     else:
         await callback.answer("You must join both chats first.", show_alert=True)
 
@@ -1461,6 +1594,7 @@ async def my_premium(callback: CallbackQuery):
             row("bolt", "Daily Limit", sc("Unlimited")),
             row("camera", "Used Today", daily_count(uid)),
             row("trash", "Deleted Saver", pro_status_text(uid)),
+            row("bolt", "Trigger Words", len(user_triggers(uid))),
         ])
         kb = back_keyboard([btn("Extend Premium", "pay", style="primary", callback_data="buy")])
     else:
@@ -1470,6 +1604,7 @@ async def my_premium(callback: CallbackQuery):
             row("bolt", "Daily Limit", user_daily_limit(uid)),
             row("camera", "Used Today", daily_count(uid)),
             row("trash", "Deleted Saver", pro_status_text(uid)),
+            row("bolt", "Trigger Words", len(user_triggers(uid))),
             SEP,
             f"{E('star')} {sc('Go premium for unlimited archives.')}",
         ])
@@ -1483,12 +1618,14 @@ async def my_stats(callback: CallbackQuery):
     uid = callback.from_user.id
     with db() as con:
         total = con.execute("SELECT COUNT(*) n FROM archives WHERE user_id=?", (uid,)).fetchone()["n"]
+        calls = con.execute("SELECT COUNT(*) n FROM call_log WHERE user_id=?", (uid,)).fetchone()["n"]
     limit = user_daily_limit(uid)
     text = "\n".join([
         bq(f"{E('stats')} {sc('Your statistics')}"),
         "",
         row("box", "Total Archived", total),
         row("camera", "Today", f"{daily_count(uid)} / {'∞' if limit is None else limit}"),
+        row("chat", "Call history", calls),
     ])
     await safe_edit(callback, text, back_keyboard())
     await callback.answer()
@@ -1548,6 +1685,8 @@ async def admin_stats(callback: CallbackQuery):
         joined = con.execute("SELECT COUNT(*) n FROM users WHERE joined_at>=?", (day_start,)).fetchone()["n"]
         archived = con.execute("SELECT COALESCE(SUM(count),0) n FROM usage_daily WHERE day=?",
                                (today(),)).fetchone()["n"]
+        calls = con.execute("SELECT COUNT(*) n FROM call_log WHERE ts>=?",
+                            (d0.timestamp(),)).fetchone()["n"]
         rev_total, rev_n = _revenue(con)
         rev_today, _ = _revenue(con, d0)
         rev_month, _ = _revenue(con, d0.replace(day=1))
@@ -1561,6 +1700,7 @@ async def admin_stats(callback: CallbackQuery):
         row("ban", "Banned Users", banned),
         row("title", "Joined Today", joined),
         row("camera", "Archives Today", archived),
+        row("chat", "Calls Today", calls),
         row("pay", "Pending Payments", pending_payments()),
         SEP,
         row("money", "Revenue Total", f"{money(rev_total)} ({rev_n} {sc('sales')})"),
@@ -1707,6 +1847,7 @@ def user_info_text(user):
     uid = user["user_id"]
     expiry = premium_expiry(uid)
     trial = trial_expiry(uid)
+    cmd_trial = cmd_trial_expiry(uid)
     limit = user_daily_limit(uid)
     with db() as con:
         total = con.execute("SELECT COUNT(*) n FROM archives WHERE user_id=?", (uid,)).fetchone()["n"]
@@ -1718,6 +1859,8 @@ def user_info_text(user):
         row("ban", "Banned", sc(str(bool(user["banned"])))),
         row("star", "Premium", f"{expiry:%Y-%m-%d %H:%M} UTC" if expiry else sc("No")),
         row("gift", "Free Trial", f"{trial:%Y-%m-%d %H:%M} UTC" if trial else sc("No")),
+        row("bolt", "Trigger Trial", f"{cmd_trial:%Y-%m-%d %H:%M} UTC" if cmd_trial else sc("No")),
+        row("bolt", "Trigger Words", ", ".join(sorted(user_triggers(uid))) or sc("none")),
         row("trash", "Deleted Saver", sc("On") if user["save_deleted"] else sc("Off")),
         row("globe", "Language", esc(user["lang"])),
         row("bolt", "Daily Limit", "∞" if limit is None else limit),
@@ -1969,16 +2112,16 @@ def month_label(months):
 
 def plans_text():
     lines = [bq(f"{E('pay')} {sc('Premium plans')}"), ""]
-    for months, (_days, price) in PLANS.items():
-        lines.append(row("star", month_label(months), f"₹{price}"))
+    for months, (days, price) in PLANS.items():
+        lines.append(row("star", month_label(months), f"₹{price} ➛ {days} {sc('days')}"))
     lines += [SEP, f"{E('bolt')} {sc('Unlimited archives on every plan.')}",
               f"{E('pay')} {sc('Select a plan to get your payment QR.')}"]
     return "\n".join(lines)
 
 
 def plans_keyboard():
-    rows = [[btn(f"{month_label(m)} — ₹{price}", "star", callback_data=f"plan:{m}")]
-            for m, (_d, price) in PLANS.items()]
+    rows = [[btn(f"{month_label(m)} · {days}d — ₹{price}", "star", callback_data=f"plan:{m}")]
+            for m, (days, price) in PLANS.items()]
     rows.append([btn("Main Menu", "home", callback_data="home")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -2482,11 +2625,13 @@ _AFK_LAST = {}                # (cid, chat_id) -> last away reply
 _KW_LAST = {}                 # (cid, chat_id, keyword) -> last reply
 _KW = {}                      # owner id -> [(keyword, reply)]
 _UPSELL_LAST = {}             # owner id -> last "unlock premium" notice
+_TRIGGERS = {}                # owner id -> set of custom trigger words
 
 
 def load_runtime_state():
     _SHH.clear()
     _RULES.clear()
+    _TRIGGERS.clear()
     with db() as con:
         for r in con.execute("SELECT * FROM shh_chats"):
             _SHH[(r["connection_id"], r["chat_id"])] = {
@@ -2499,6 +2644,8 @@ def load_runtime_state():
                 "nolinks": bool(r["no_links"]), "antispam": bool(r["antispam"])}
         for r in con.execute("SELECT connection_id, owner_id FROM business_connections WHERE is_enabled=1"):
             _CONN_OWNER[r["connection_id"]] = r["owner_id"]
+        for r in con.execute("SELECT user_id, word FROM triggers"):
+            _TRIGGERS.setdefault(r["user_id"], set()).add(r["word"])
 
 
 def conn_owner(cid):
@@ -2986,6 +3133,49 @@ async def cmd_rule_toggle(message, cid, uid, rest, cmd):
 
 
 # ---------------------------------------------------------------------------------
+# Call history (always on, every connected chat)
+# ---------------------------------------------------------------------------------
+def _call_of(m):
+    """Bot API does not model calls, so read the raw payload."""
+    raw = getattr(m, "model_extra", None) or {}
+    return raw.get("call")
+
+
+def _is_call(m):
+    return bool(_call_of(m))
+
+
+async def record_call(message, call):
+    cid = message.business_connection_id
+    owner = conn_owner(cid)
+    if owner is None:
+        return
+    call = call if isinstance(call, dict) else {}
+    direction = str(call.get("status") or call.get("type") or "call").lower()
+    duration = call.get("duration")
+    label = plain_label(message.chat)
+    with db() as con:
+        con.execute("INSERT INTO call_log(user_id, chat_id, chat_label, direction, duration, ts) "
+                    "VALUES(?,?,?,?,?,?)", (owner, message.chat.id, label, direction, duration, time.time()))
+    try:
+        with use_lang(owner):
+            lines = [f"{E('chat')} <b>{sc('Call')}</b>",
+                     row("user", "From", chat_link(message.chat)),
+                     row("ok", "Type", sc(direction.capitalize()))]
+            if duration:
+                lines.append(row("time", "Duration", f"{duration // 60:02d}:{duration % 60:02d}"))
+            await bot.send_message(owner, "\n".join(lines))
+    except Exception:
+        logging.exception("could not deliver a call record")
+    log_activity(owner, "call", message.chat.id, label, direction)
+
+
+@dp.business_message(_is_call)
+async def on_call(message: Message):
+    await record_call(message, _call_of(message))
+
+
+# ---------------------------------------------------------------------------------
 # Deleted-message saver (premium / free trial, private chats only)
 # ---------------------------------------------------------------------------------
 _DOT_WORD = re.compile(r"^\.[A-Za-z0-9_]{1,12}$")
@@ -3028,6 +3218,8 @@ def _is_incoming(m):
 async def incoming_guard(message: Message):
     """Everything the other person writes passes here: shh first (as fast as possible), then
     block rules, then the deleted-message cache, keyword replies and the away reply."""
+    if _is_call(message):
+        return                              # calls are handled by on_call
     cid = message.business_connection_id
     key = (cid, message.chat.id)
     cfg = _SHH.get(key)
@@ -3554,6 +3746,7 @@ class UFlow(StatesGroup):
     afk_tz = State()
     kw_add = State()
     sn_add = State()
+    trigger_add = State()
     contact = State()
 
 
@@ -3957,6 +4150,7 @@ def tools_text():
 
 def tools_keyboard():
     return InlineKeyboardMarkup(inline_keyboard=[
+        [btn("Trigger Words", "bolt", callback_data="trgmenu"), btn("Call History", "chat", callback_data="callmenu")],
         [btn("Keyword Replies", "bolt", callback_data="kwmenu"), btn("Snippets", "pin", callback_data="snmenu")],
         [btn("Scheduled", "time", callback_data="schmenu"), btn("Activity", "list", callback_data="actmenu")],
         [btn("Commands", "play", callback_data="helpmenu"), btn("Panic", "ban", style="danger", callback_data="panicbtn")],
@@ -3989,6 +4183,7 @@ def help_text():
         "<code>.kw add word | reply</code> <code>.snip add name | text</code>",
         "<code>.panic</code>",
         SEP,
+        f"{E('bolt')} {sc('Archive by replying with')} <code>{TRIGGER_WORD}</code> " + sc("or your own words from Trigger Words."),
         f"{E('lock')} {sc('Only you can use these, and the bot deletes the command message.')}",
         f"{E('warn')} <b>{esc(AX_WARNING)}</b>",
     ])
@@ -3997,6 +4192,108 @@ def help_text():
 @dp.callback_query(F.data == "helpmenu")
 async def help_menu(callback: CallbackQuery, state: FSMContext):
     await open_screen(callback, state, help_text(), back_keyboard(back_to("toolsmenu")))
+
+
+# ---- Custom archive commands -----------------------------------------------------------
+def trigger_access_text(uid):
+    if is_premium(uid):
+        return sc("Premium")
+    end = cmd_trial_expiry(uid)
+    if end:
+        return f"{sc('Free Trial')} ({fmt_left(end - now())})"
+    return sc("Locked")
+
+
+def trg_text(uid):
+    words = sorted(user_triggers(uid))
+    lines = [
+        bq(f"{E('bolt')} {sc('Custom commands')}"),
+        "",
+        row("star", "Access", trigger_access_text(uid)),
+        row("ok", "Default", f"<code>{TRIGGER_WORD}</code>"),
+    ]
+    lines += [row("pin", "Custom", f"<code>{esc(w)}</code>") for w in words]
+    lines += [
+        row("box", "Slots", f"{len(words)}/{MAX_TRIGGERS}"),
+        SEP,
+        sc("Reply to any media with one of these words and the copy arrives here."),
+        sc("The default word always works, custom ones are a premium feature."),
+    ]
+    if not is_premium(uid) and cmd_trial_expiry(uid) is None:
+        lines += [SEP, f"{E('lock')} {sc('Your 7 day trial has ended. Premium unlocks custom commands.')}"]
+    return "\n".join(lines)
+
+
+def trg_keyboard(uid):
+    rows = [[btn(f"Remove {w}", "trash", style="danger", callback_data=f"trgdel:{w}")]
+            for w in sorted(user_triggers(uid))]
+    if has_custom_triggers(uid) and len(user_triggers(uid)) < MAX_TRIGGERS:
+        rows.append([btn("Add Command", "ok", style="success", callback_data="trgadd")])
+    if not is_premium(uid):
+        rows.append([btn("Buy Premium", "pay", style="primary", callback_data="buy")])
+    rows.append(back_to("toolsmenu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@dp.callback_query(F.data == "trgmenu")
+async def trg_menu(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    await open_screen(callback, state, trg_text(uid), trg_keyboard(uid))
+
+
+@dp.callback_query(F.data == "trgadd")
+async def trg_ask(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    if not has_custom_triggers(uid):
+        return await callback.answer(sc("Your trial has ended. Premium unlocks custom commands."), show_alert=True)
+    if len(user_triggers(uid)) >= MAX_TRIGGERS:
+        return await callback.answer(sc("You already have") + f" {MAX_TRIGGERS} " + sc("custom commands."), show_alert=True)
+    await ask(callback, state, UFlow.trigger_add,
+              f"{E('bolt')} {sc('Send the word to archive with.')}\n"
+              f"{sc('Example:')} <code>keep</code>\n{sc('Letters, numbers or _ only.')}")
+
+
+@dp.message(UFlow.trigger_add)
+async def trg_got(message: Message, state: FSMContext):
+    if message.text == "/cancel":
+        return await flow_cancel(message, state)
+    uid = message.from_user.id
+    if not has_custom_triggers(uid):
+        return await flow_retry(message, sc("Your trial has ended. Premium unlocks custom commands."))
+    res = add_trigger(uid, message.text or "")
+    errors = {"format": sc("Letters, numbers or _ only, max 24 characters."),
+              "default": sc("That is already the default word, pick another."),
+              "limit": sc("You already have") + f" {MAX_TRIGGERS} " + sc("custom commands.")}
+    if res != "ok":
+        return await flow_retry(message, errors[res])
+    await flow_end(message, state, trg_text(uid), trg_keyboard(uid))
+
+
+@dp.callback_query(F.data.startswith("trgdel:"))
+async def trg_delete(callback: CallbackQuery, state: FSMContext):
+    uid = callback.from_user.id
+    remove_trigger(uid, callback.data.split(":", 1)[1])
+    await open_screen(callback, state, trg_text(uid), trg_keyboard(uid))
+
+
+# ---- Call history screen ---------------------------------------------------------------
+def calls_text(uid):
+    with db() as con:
+        rows = con.execute("SELECT * FROM call_log WHERE user_id=? ORDER BY ts DESC LIMIT 20", (uid,)).fetchall()
+    lines = [bq(f"{E('chat')} {sc('Call history')}"), ""]
+    for r in rows:
+        dur = f" · {r['duration'] // 60:02d}:{r['duration'] % 60:02d}" if r["duration"] else ""
+        lines.append(f"{fmt_local(r['ts'], uid)} · <b>{sc((r['direction'] or 'call').capitalize())}</b> "
+                     f"➛ {chat_ref(r['chat_id'], r['chat_label'])}{dur}")
+    if not rows:
+        lines.append(sc("Nothing yet."))
+    lines += [SEP, sc("Every call in your connected chats is recorded here automatically.")]
+    return "\n".join(lines)
+
+
+@dp.callback_query(F.data == "callmenu")
+async def call_menu(callback: CallbackQuery, state: FSMContext):
+    await open_screen(callback, state, calls_text(callback.from_user.id), back_keyboard(back_to("toolsmenu")))
 
 
 # keyword replies
@@ -4331,8 +4628,38 @@ async def send_trial_intro(uid):
         return False
 
 
+def trigger_intro_text(uid):
+    end = cmd_trial_expiry(uid)
+    lines = [bq(f"{E('bolt')} {sc('New: custom archive commands')}"), "",
+             sc("You can archive media with your own words now, up to") + f" {MAX_TRIGGERS}.",
+             sc("Reply to any media with your word, exactly like the default one."),
+             row("ok", "Default", f"<code>{TRIGGER_WORD}</code>")]
+    if is_premium(uid):
+        lines += ["", f"{E('star')} {sc('It is included in your Premium.')}"]
+    elif end:
+        lines += ["", f"{E('gift')} <b>{sc('7 day free trial unlocked')}</b>",
+                  row("calendar", "Trial Ends", f"{end:%d %b %Y %H:%M} UTC"),
+                  f"{E('star')} {sc('Keep it after the trial with Premium.')}"]
+    return "\n".join(lines)
+
+
+async def send_trigger_intro(uid):
+    """Tell a user about custom commands (once)."""
+    with db() as con:
+        con.execute("UPDATE users SET cmd_notified=1 WHERE user_id=?", (uid,))
+    try:
+        with use_lang(uid):
+            await bot.send_message(uid, trigger_intro_text(uid), reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                [btn("Trigger Words", "bolt", style="primary", callback_data="trgmenu")],
+                [btn("Main Menu", "home", callback_data="home")]]))
+        return True
+    except Exception:
+        logging.info("could not send the trigger intro to %s", uid)
+        return False
+
+
 async def announce_trial_loop():
-    """Once after the update: every user who has not heard about the trial gets the message."""
+    """Once after the update: everyone who has not heard about a feature gets the message."""
     await asyncio.sleep(20)
     with db() as con:
         ids = [r["user_id"] for r in con.execute("SELECT user_id FROM users WHERE banned=0 AND trial_notified=0")]
@@ -4340,6 +4667,12 @@ async def announce_trial_loop():
         await send_trial_intro(uid)
         await asyncio.sleep(0.06)  # gentle rate limiting
     logging.info("Trial announcement finished (%d users)", len(ids))
+    with db() as con:
+        ids = [r["user_id"] for r in con.execute("SELECT user_id FROM users WHERE banned=0 AND cmd_notified=0")]
+    for uid in ids:
+        await send_trigger_intro(uid)
+        await asyncio.sleep(0.06)
+    logging.info("Custom command announcement finished (%d users)", len(ids))
 
 
 # ---- background housekeeping ----------------------------------------------------------------
@@ -4383,6 +4716,7 @@ def purge_old():
     with db() as con:
         con.execute("DELETE FROM msg_cache WHERE sent_at<?", (cutoff,))
         con.execute("DELETE FROM activity WHERE ts<?", (time.time() - 30 * 86400,))
+        con.execute("DELETE FROM call_log WHERE ts<?", (time.time() - 30 * 86400,))
 
 
 async def housekeeping_loop():
@@ -4408,10 +4742,8 @@ def clean_temp_media():
 
 @dp.business_message()
 async def archive_reply(message: Message):
-    # 1. Must be the trigger word, sent as a reply, with a business connection.
-    if not message.text or message.text.strip().casefold() != TRIGGER_WORD:
-        return
-    if not message.business_connection_id or not message.from_user:
+    # 1. Must be a reply to a media message, inside a business connection.
+    if not message.text or not message.business_connection_id or not message.from_user:
         return
     original = message.reply_to_message
     if original is None:
@@ -4438,13 +4770,17 @@ async def archive_reply(message: Message):
     if owner["banned"]:
         return
 
-    # 4. Is there media in the replied message?
+    # 4. The text must be the default word or one of the owner's custom commands.
+    if message.text.strip().casefold() not in trigger_words(owner_id):
+        return
+
+    # 5. Is there media in the replied message?
     media, media_type, extension = extract_media(original)
     if media is None:
         await notice(owner_id, f"{E('err')} {sc('No supported media found in the replied message.')}", ttl=10)
         return
 
-    # 5. Never process the same trigger twice.
+    # 6. Never process the same trigger twice.
     try:
         with db() as con:
             con.execute(
@@ -4461,7 +4797,7 @@ async def archive_reply(message: Message):
                 "DELETE FROM processed_messages WHERE connection_id=? AND source_chat_id=? AND command_message_id=?",
                 (message.business_connection_id, message.chat.id, message.message_id))
 
-    # 6. Per-user daily limit (each owner has their own counter).
+    # 7. Per-user daily limit (each owner has their own counter).
     if not has_quota(owner_id):
         limit = user_daily_limit(owner_id)
         await notice(
@@ -4476,7 +4812,7 @@ async def archive_reply(message: Message):
             ttl=120, reply_markup=back_keyboard([btn("Buy Premium", "pay", style="primary", callback_data="buy")]))
         return
 
-    # 7. Download, deliver to the owner, then count it.
+    # 8. Download, deliver to the owner, then count it.
     if SAVE_MEDIA_LOCALLY:
         user_dir = SAVE_DIR / str(owner_id)
         user_dir.mkdir(parents=True, exist_ok=True)
